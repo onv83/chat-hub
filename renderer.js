@@ -395,12 +395,12 @@ function updateBadge(svcId, text, mention) {
   if (m) { m.textContent = ''; m.classList.remove('on') }
 }
 
-// п.20: два счётчика на вкладке MM — всего непрочитанных сообщений (красный)
-// и упоминаний пользователя лично (яркий @-чип: личные чаты + @-упоминания).
-// Числа канонические, из API MM /users/me/teams/unread — сайдбар каналов
-// показывает только упоминания, «всего» из него не получить.
-function updateBadgeMM(total, mentions) {
-  const b = document.querySelector('.tab[data-tab="svc:mm"] .badge')
+// п.20: два счётчика на вкладке мессенджера — всего непрочитанных сообщений
+// (красный) и упоминаний пользователя лично (яркий @-чип). MM берёт числа
+// из API /users/me/teams/unread (mmTabCounts); TG/MAX/ydx — суммы по всем
+// строкам списка от их экстракторов (svcTotals).
+function updateBadge2(svcId, total, mentions) {
+  const b = document.querySelector('.tab[data-tab="svc:' + svcId + '"] .badge')
   const m = b && b.parentElement && b.parentElement.querySelector('.badge.badge-m')
   if (!b || !m) return
   b.textContent = total > 0 ? String(total) : ''
@@ -1409,7 +1409,7 @@ async function pollUnread() {
               if (pin && tgPidSafe(pin, f.pid, f.rowTitle)) state.tgPeerOf[f.id] = f.pid
             }
           }
-          res = { favs: Array.from(byId.values()) }
+          res = { favs: Array.from(byId.values()), svcTotals: (res && res.svcTotals) || null }
         }
       } catch {}
     }
@@ -1452,6 +1452,9 @@ async function pollUnread() {
     if (svc.id === 'mm') {
       // бейдж вкладки MM — из API (mmTabCounts): два чипа «всего/@упоминаний»;
       // сайдбарные суммы здесь не трогаем (rows уже обновлены выше)
+    } else if (res.svcTotals) {
+      // п.20: два чипа на вкладке — суммы по ВСЕМУ списку мессенджера
+      updateBadge2(svc.id, res.svcTotals.total || 0, res.svcTotals.mentions || 0)
     } else if (mentions > 0) updateBadge(svc.id, '@' + mentions, true)
     else if (countSum > 0) updateBadge(svc.id, String(countSum), false)
     else if (unreadChats > 0) updateBadge(svc.id, String(unreadChats), false)
@@ -1577,7 +1580,7 @@ async function mmTabCounts() {
     if (!out) return
     state.mmTabCountsAt = now
     const c = JSON.parse(out)
-    if (typeof c.t === 'number') updateBadgeMM(c.t, c.m)
+    if (typeof c.t === 'number') updateBadge2('mm', c.t, c.m)
   } catch {}
 }
 
@@ -1887,7 +1890,16 @@ async function __chatHubTgUnread(favs, allowScroll) {
     }
     out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale })
   }
-  return JSON.stringify({ favs: out })
+  // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
+  // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
+  // (красный бейдж webk — упоминание/личное, как в строках избранного)
+  let svcTotal = 0
+  let svcMentions = 0
+  for (const r of rows) {
+    svcTotal += parseN(String(r.unreadTxt || '').replace(/^@/, ''))
+    svcMentions += r.mentions || 0
+  }
+  return JSON.stringify({ favs: out, svcTotals: { total: svcTotal, mentions: svcMentions } })
 }
 
 // MAX: строка чата по названию (span.name — НЕ span.text, это текст последнего
@@ -1918,7 +1930,16 @@ function __chatHubMaxUnread(favs) {
     }
     out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time })
   }
-  return JSON.stringify({ favs: out })
+  // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
+  // Маркеров упоминаний список MAX не показывает — только общее число.
+  let svcTotal = 0
+  for (const it of items) {
+    for (const sp of it.querySelectorAll('span')) {
+      const txt = (sp.textContent || '').trim()
+      if (/^\d+$/.test(txt)) svcTotal += parseInt(txt, 10)
+    }
+  }
+  return JSON.stringify({ favs: out, svcTotals: { total: svcTotal, mentions: 0 } })
 }
 
 // Яндекс Чат (Телемост): строки списка .yamb-chat-list-item, имя —
@@ -1957,7 +1978,17 @@ function __chatHubYdxUnread(favs) {
     }
     out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time })
   }
-  return JSON.stringify({ favs: out })
+  // п.20: общая сумма непрочитанных по ВСЕМУ списку Телемоста — на вкладку.
+  // Маркеров упоминаний список не показывает — только общее число.
+  let svcTotal = 0
+  for (const it of items) {
+    const bb = it.querySelector('.yamb-chat-list-item__badges')
+    if (bb) {
+      const nn = parseInt((bb.textContent || '').replace(/\D+/g, ''), 10)
+      if (nn > 0) svcTotal += nn
+    }
+  }
+  return JSON.stringify({ favs: out, svcTotals: { total: svcTotal, mentions: 0 } })
 }
 
 /* ---------- настройка вида чата справа (CSS + зум) ---------- */
