@@ -1458,7 +1458,8 @@ async function pollUnread() {
       // п.20: два чипа на вкладке — суммы по ВСЕМУ списку мессенджера;
       // запоминаем для агрегата «★ Сборной»
       state.svcTabTotals = state.svcTabTotals || {}
-      state.svcTabTotals[svc.id] = res.svcTotals
+      // нормализуем ключи к {t, m} — как у mmTabCounts (агрегат «Сборной» читает t/m)
+      state.svcTabTotals[svc.id] = { t: res.svcTotals.total || 0, m: res.svcTotals.mentions || 0 }
       updateBadge2(svc.id, res.svcTotals.total || 0, res.svcTotals.mentions || 0)
     } else if (mentions > 0) updateBadge(svc.id, '@' + mentions, true)
     else if (countSum > 0) updateBadge(svc.id, String(countSum), false)
