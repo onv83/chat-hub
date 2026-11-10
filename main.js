@@ -91,6 +91,10 @@ ipcMain.handle('config:save', (_e, cfg) => {
   return true
 })
 ipcMain.handle('config:path', () => CONFIG_PATH)
+// настоящий фокус ОКНА приложения: document.hasFocus() в рендерере врёт,
+// когда фокус уходит внутрь webview (клик в чат мессенджера), из-за чего
+// фоновые проходы печатали в поиск Telegram при живом пользователе
+ipcMain.handle('win:focused', () => BrowserWindow.getAllWindows().some(w => w.isFocused()))
 
 // Доверенный ввод в webview. webk Telegram игнорирует синтетические JS-события,
 // а webContents.insertText на скрытой вьюхе теряется. Работает только ввод

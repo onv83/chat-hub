@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('hub', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (cfg) => ipcRenderer.invoke('config:save', cfg),
   configPath: () => ipcRenderer.invoke('config:path'),
+  isWinFocused: () => ipcRenderer.invoke('win:focused'),
   // доверенный ввод в webview мессенджера (нужен webk Telegram)
   trustedClick: (wcId, x, y) => ipcRenderer.invoke('input:click', { wcId, x, y }),
   trustedText: (wcId, text) => ipcRenderer.invoke('input:text', { wcId, text }),
