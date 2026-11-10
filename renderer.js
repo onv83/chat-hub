@@ -706,9 +706,26 @@ async function getChatNameFor(svcId, wv, pinUrl) {
   if (svcId === 'tg' && pinUrl) {
     const pid = (String(pinUrl).match(/#([-\w@]+)/) || [])[1]
     if (pid) {
-      expr = '(() => { const av = document.querySelector(' +
-        JSON.stringify('[data-peer-id="' + pid + '"]') +
-        '); const row = av ? (av.closest(".row-clickable") || av) : null; const t = row ? row.querySelector(".peer-title") : null; return t ? t.textContent.trim() : "" })()'
+      // имя из СТРОКИ СПИСКА: у каналов/юзеров строка ищется по href (#@username),
+      // у числовых id — по data-peer-id; виртуализация может прятать строку,
+      // тогда шапка открытого чата (сверив хеш вьюхи с URL пина) и, наконец,
+      // само имя из username («@Combat_Library» → «Combat Library»)
+      expr = `(() => {
+        const pid = ${JSON.stringify(pid)}
+        let row = document.querySelector('a.row-clickable[href="#' + pid + '"]')
+        if (!row) {
+          const av = document.querySelector('[data-peer-id="' + pid + '"]')
+          row = av ? (av.closest('.row-clickable') || av) : null
+        }
+        const t = row ? row.querySelector('.peer-title') : null
+        if (t && t.textContent.trim()) return t.textContent.trim()
+        if (String(location.hash || '') === '#' + pid) {
+          const h = document.querySelector('.topbar .peer-title, .chat-info .peer-title, .peer-title')
+          if (h && h.textContent.trim()) return h.textContent.trim()
+        }
+        if (pid.startsWith('@')) return decodeURIComponent(pid.slice(1)).replace(/[_\\.]+/g, ' ')
+        return ''
+      })()`
     }
   }
   if (svcId === 'mm' && pinUrl) {
