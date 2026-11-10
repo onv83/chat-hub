@@ -576,7 +576,10 @@ function buildSection(id, deferSrc) {
     // Телемост: панель сервисов Яндекса (Алиса Про/Почта/Диск/Документы/
     // Календарь/Заметки) — скрываем и в сервисной вкладке, и в пин-вьюхах
     // (в пин-вьюхах ещё и через columnCss — там лишняя полоса слева вдвойне мешает)
-    if (svc.id === 'ydx') { try { wv.insertCSS('[class^="GlobalBarContainer"]{display:none !important}') } catch (e) {} }
+    if (svc.id === 'ydx') { try { wv.insertCSS('[class^="GlobalBarRoot"]{display:none !important}') } catch (e) {} }
+    // MAX: левый сайдбар (Все/Сферум/Каналы/Контакты/Звонки) — прячем и в
+    // основной вкладке; .app держит под него grid-колонку 77px — схлопываем
+    if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app{grid-template-columns:0 0 auto !important}') } catch (e) {} }
   })
 
   const menuBtn = bar.querySelector('.open-fav-menu')
@@ -2445,7 +2448,7 @@ function buildSettings(sec) {
       <h3>Вид</h3>
       <div class="form-row">
         <label style="flex:1"><input type="radio" name="layout" value="tabs"> Вкладки сверху</label>
-        <label style="flex:1"><input type="radio" name="layout" value="sidebar"> Панель слева (как в Ferdium)</label>
+        <label style="flex:1"><input type="radio" name="layout" value="sidebar"> Панель слева</label>
       </div>
       <p class="hint">Панель слева тянется за правый край: шире — значки с надписями,
       уже — только большие значки мессенджеров. Переключение применяется сразу.</p>
