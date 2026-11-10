@@ -1030,9 +1030,11 @@ async function tgSearchResolve(favs) {
   // когда пользователь кликнул в чат внутри webview, хост-документ считает
   // фокус потерянным и проход начинал печатать прямо на глазах. Спрашиваем
   // настоящий фокус окна у main-процессса; при любой ошибке считаем, что
-  // пользователь здесь, и ничего не делаем. Тумблер в ⚙ Настройках выключает
-  // фоновую индексацию полностью.
-  if (state.cfg.tgBackgroundIndex === false) return null
+  // пользователь здесь, и ничего не делаем. Тумблер в ⚙ Настройках. ПО УМОЛЧАНИЮ
+  // ВЫКЛЮЧЕНА: проходы печатают в поиск Telegram, и когда окно видно, но не в
+  // фокусе (пользователь печатает в другом окне рядом) — это выглядит как
+  // «программа печатает сама». Включается только осознанно в настройках.
+  if (state.cfg.tgBackgroundIndex !== true) return null
   try { if (await window.hub.isWinFocused()) return null } catch { return null }
   if (document.hasFocus()) return null
   if (tgSearchBusy || Date.now() - tgSearchAt < 20000) return null
@@ -1956,9 +1958,10 @@ function buildSettings(sec) {
       </div>
 
       <h3>Индексация Telegram</h3>
-      <p class="hint">Обновление «времени последнего сообщения» у пинов Telegram:
-      приложение ищет чаты и читает список диалогов ТОЛЬКО когда окно свёрнуто
-      или неактивно. Активное окно никогда не трогается. Если мешает — выключите.</p>
+      <p class="hint">Обновление «времени последнего сообщения» у пинов Telegram: приложение
+      ищет чаты и читает список диалогов ТОЛЬКО когда окно свёрнуто и неактивно.
+      <b>По умолчанию выключено</b> — включайте, если хотите свежие времена у пинов
+      в фоне. Активное окно не трогается никогда.</p>
       <div class="form-row">
         <label style="flex:1"><input type="checkbox" id="tg-bg-index"> Фоновая индексация Telegram</label>
       </div>
@@ -2003,7 +2006,7 @@ function buildSettings(sec) {
   // тумблер «фоновая индексация Telegram» — применяется сразу, без перезапуска
   const tgBg = document.getElementById('tg-bg-index')
   if (tgBg) {
-    tgBg.checked = state.cfg.tgBackgroundIndex !== false
+    tgBg.checked = state.cfg.tgBackgroundIndex === true
     tgBg.onchange = async () => {
       state.cfg.tgBackgroundIndex = tgBg.checked
       await window.hub.saveConfig(state.cfg)
