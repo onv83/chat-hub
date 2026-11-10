@@ -159,27 +159,6 @@ ipcMain.handle('input:wheel', async (_e, { wcId, x, y, deltaY }) => {
   } catch { return false }
 })
 
-// диагностика самопроизвольного окна Телемоста: логируем КАЖДОЕ новое окно и
-// webContents с URL (Kimi 3.1: setWindowOpenHandler вешается на конкретный
-// webContents и не ловит окна из пересозданных гостей/попапов/других путей;
-// глобальные события app ловят всё). Лог: userData/window-diag.log
-{
-  const DIAG_LOG = path.join(app.getPath('userData'), 'window-diag.log')
-  const diag = line => { try { fs.appendFileSync(DIAG_LOG, new Date().toISOString() + ' ' + line + '\n') } catch {} }
-  app.on('web-contents-created', (_e, contents) => {
-    try {
-      diag('web-contents-created type=' + contents.getType() + ' url=' + (contents.getURL() || '(пусто)'))
-      contents.on('did-navigate', () => { try { diag('navigate type=' + contents.getType() + ' → ' + contents.getURL()) } catch {} })
-    } catch {}
-  })
-  app.on('browser-window-created', (_e, win) => {
-    try {
-      diag('browser-window-created id=' + win.id + ' url=' + ((win.webContents && win.webContents.getURL()) || '(пусто)'))
-      if (win.webContents) win.webContents.once('did-navigate', () => { try { diag('window id=' + win.id + ' navigate → ' + win.webContents.getURL()) } catch {} })
-    } catch {}
-  })
-}
-
 function createWindow() {
   // webk (Telegram) прячет список диалогов при viewport < ~1320px, поэтому
   // окно должно открываться большим: запоминаем размеры и «развёрнутость»
