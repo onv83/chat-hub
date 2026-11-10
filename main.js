@@ -1,5 +1,5 @@
 // ChatHub — все мессенджеры в одном окне + сборная вкладка с закреплёнными чатами
-const { app, BrowserWindow, ipcMain, session, shell, webContents, Menu } = require('electron')
+const { app, BrowserWindow, ipcMain, session, shell, webContents, Menu, nativeTheme } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
@@ -63,6 +63,9 @@ function loadConfig() {
 }
 
 let config = loadConfig()
+// тема приложения → nativeTheme: webview-мессенджеры в «системной» теме
+// должны подхватывать светлый/тёмный режим сразу при старте
+try { nativeTheme.themeSource = config.theme === 'light' ? 'light' : 'dark' } catch {}
 
 function persistConfig() {
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
@@ -93,6 +96,14 @@ ipcMain.handle('config:save', (_e, cfg) => {
 })
 ipcMain.handle('config:path', () => CONFIG_PATH)
 ipcMain.handle('app:version', () => app.getVersion())
+// тема мессенджеров в webview: сайты в режиме «системная тема» смотрят
+// prefers-color-scheme, а он у Electron управляется nativeTheme.themeSource.
+// Ставим его по теме ПРИЛОЖЕНИЯ — тогда светлый ChatHub зажигает светлый
+// интерфейс во всех встроенных чатах (у кого тема не выставлена вручную)
+ipcMain.handle('theme:set-source', (_e, src) => {
+  nativeTheme.themeSource = src === 'light' ? 'light' : 'dark'
+  return nativeTheme.shouldUseDarkColors
+})
 // настоящий фокус ОКНА приложения: document.hasFocus() в рендерере врёт,
 // когда фокус уходит внутрь webview (клик в чат мессенджера), из-за чего
 // фоновые проходы печатали в поиск Telegram при живом пользователе
