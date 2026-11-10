@@ -232,6 +232,10 @@ function buildTabs() {
   const cbadge = document.createElement('span')
   cbadge.className = 'badge'
   cb.appendChild(cbadge)
+  // второй чип «@упоминаний лично» — как у вкладок мессенджеров (п.20)
+  const cmbadge = document.createElement('span')
+  cmbadge.className = 'badge badge-m'
+  cb.appendChild(cmbadge)
   for (const svc of state.cfg.services) {
     const b = mk('svc:' + svc.id, svc.name)
     const badge = document.createElement('span')
@@ -400,7 +404,7 @@ function updateBadge(svcId, text, mention) {
 // из API /users/me/teams/unread (mmTabCounts); TG/MAX/ydx — суммы по всем
 // строкам списка от их экстракторов (svcTotals).
 function updateBadge2(svcId, total, mentions) {
-  const b = document.querySelector('.tab[data-tab="svc:' + svcId + '"] .badge')
+  const b = document.querySelector(svcId === 'combined' ? '.tab[data-tab="combined"] .badge' : '.tab[data-tab="svc:' + svcId + '"] .badge')
   const m = b && b.parentElement && b.parentElement.querySelector('.badge.badge-m')
   if (!b || !m) return
   b.textContent = total > 0 ? String(total) : ''
@@ -1344,8 +1348,6 @@ function tgPidSafe(pin, pid, rowTitle) {
 }
 
 async function pollUnread() {
-  let favTotal = 0        // сумма новых сообщений по всем избранным чатам (для вкладки «Сборная»)
-  let favMention = false  // есть ли @-упоминания среди них
   for (const svc of state.cfg.services) {
     const favs = favoritesOf(svc.id)
     const ext = UNREAD_EXTRACTORS[svc.id]
@@ -1426,9 +1428,6 @@ async function pollUnread() {
       if (r.mentions) mentions += r.mentions
       if (r.count) countSum += r.count
       if (r.unread) unreadChats++
-      // общая сумма новых сообщений в ИЗБРАННЫХ чатах — на вкладку «★ Сборная»
-      favTotal += (r.mentions || 0) + (r.count || 0) + (r.unread ? 1 : 0)
-      if (r.mentions) favMention = true
       // активность для сортировки: позиция строки в списке мессенджера
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
@@ -1456,22 +1455,24 @@ async function pollUnread() {
       // бейдж вкладки MM — из API (mmTabCounts): два чипа «всего/@упоминаний»;
       // сайдбарные суммы здесь не трогаем (rows уже обновлены выше)
     } else if (res.svcTotals) {
-      // п.20: два чипа на вкладке — суммы по ВСЕМУ списку мессенджера
+      // п.20: два чипа на вкладке — суммы по ВСЕМУ списку мессенджера;
+      // запоминаем для агрегата «★ Сборной»
+      state.svcTabTotals = state.svcTabTotals || {}
+      state.svcTabTotals[svc.id] = res.svcTotals
       updateBadge2(svc.id, res.svcTotals.total || 0, res.svcTotals.mentions || 0)
     } else if (mentions > 0) updateBadge(svc.id, '@' + mentions, true)
     else if (countSum > 0) updateBadge(svc.id, String(countSum), false)
     else if (unreadChats > 0) updateBadge(svc.id, String(unreadChats), false)
     else updateBadge(svc.id, '', false)
   }
-  // общий счётчик новых сообщений избранного — на вкладке «★ Сборная»,
-  // видно не открывая вкладку; красный, если есть @-упоминания
-  const cb = document.querySelector('.tab[data-tab="combined"] .badge')
-  if (cb) {
-    const txt = favTotal > 0 ? String(favTotal) : ''
-    cb.textContent = txt
-    cb.classList.toggle('on', !!txt)
-    cb.classList.toggle('mention', !!txt && favMention)
-  }
+  // п.20: два чипа на «★ Сборной» — суммы по ВСЕМ мессенджерам (не только
+  // избранное): всего непрочитанных + упоминаний лично; берём уже собранные
+  // счётчики вкладок (state.svcTabTotals: MM — API, прочие — экстракторы)
+  state.svcTabTotals = state.svcTabTotals || {}
+  let combT = 0
+  let combM = 0
+  for (const v of Object.values(state.svcTabTotals)) { combT += v.t || 0; combM += v.m || 0 }
+  updateBadge2('combined', combT, combM)
   // время последнего сообщения в строках: «Мессенджер · 17:30»
   // (в т.ч. MM — из API; полный текст времени — в подсказке)
   for (const p of state.cfg.pinned) {
@@ -1583,7 +1584,12 @@ async function mmTabCounts() {
     if (!out) return
     state.mmTabCountsAt = now
     const c = JSON.parse(out)
-    if (typeof c.t === 'number') updateBadge2('mm', c.t, c.m)
+    if (typeof c.t === 'number') {
+      // запоминаем для агрегата «★ Сборной» (п.20)
+      state.svcTabTotals = state.svcTabTotals || {}
+      state.svcTabTotals.mm = { t: c.t, m: c.m }
+      updateBadge2('mm', c.t, c.m)
+    }
   } catch {}
 }
 
