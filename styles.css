@@ -206,6 +206,13 @@ body.split-dragging webview { pointer-events: none !important; }
 .settings:hover::-webkit-scrollbar-thumb { background: rgba(128,128,128,.6); background-clip: content-box; }
 .settings::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.85); background-clip: content-box; }
 .settings:not(:hover)::-webkit-scrollbar-thumb { background: transparent; }
+/* о программе: версия + краткая справка */
+.about-box { background: var(--bg); border: 1px solid rgba(128,128,128,.25); border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; }
+.about-title { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.about-title span { color: var(--muted); font-weight: 400; }
+.about-box summary { cursor: pointer; color: var(--muted); margin-top: 8px; user-select: none; }
+.about-list { margin: 8px 0 2px; padding-left: 18px; }
+.about-list li { margin: 4px 0; }
 .settings h2 { margin: 0 0 4px; }
 .settings h3 { margin: 26px 0 8px; color: var(--text); }
 .hint { color: var(--muted); font-size: 12.5px; }

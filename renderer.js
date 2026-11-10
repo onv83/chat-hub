@@ -2071,12 +2071,27 @@ async function applyColumnTweaks(wv, p, attempt) {
 function buildSettings(sec) {
   sec.innerHTML = `
     <div class="settings">
+      <div class="about-box">
+        <div class="about-title">ChatHub <span id="about-version"></span></div>
+        <p class="hint">Все рабочие мессенджеры в одном окне — Mattermost, Telegram, MAX и Яндекс Телемост —
+        плюс сборная вкладка «★» с избранными чатами из всех мессенджеров сразу.</p>
+        <details>
+          <summary>Как пользоваться</summary>
+          <ul class="about-list">
+            <li>Вкладки сверху — мессенджеры. Войти достаточно один раз (Telegram и MAX — по QR-коду).</li>
+            <li>«⭐ В избранное» на вкладке мессенджера добавляет открытый чат в сборную вкладку.</li>
+            <li>«★ Сборная»: избранные чаты слева, переписка справа. 📌 — закрепить наверху,
+            ↗ — открыть на вкладке мессенджера, ✕ — убрать из избранного.</li>
+            <li>Счётчики на вкладках: всего непрочитанных и @упоминания; на «★ Сборной» — суммы по избранным чатам.</li>
+            <li>🔍 «Найти чат…» — поиск по избранным; список сортируется по времени последнего сообщения.</li>
+          </ul>
+        </details>
+      </div>
       <h2>⚙ Настройки</h2>
       <p class="hint">Файл конфигурации: <code id="cfg-path"></code></p>
 
       <h3>Мессенджеры (вкладки)</h3>
       <div id="svc-rows"></div>
-      <button class="btn" id="add-svc">+ Добавить мессенджер</button>
 
       <h3>Сборная вкладка: скрыть лишнее (CSS)</h3>
       <p class="hint">Применяется только к чату справа в сборной вкладке — прячем боковые панели,
@@ -2114,11 +2129,19 @@ function buildSettings(sec) {
     </div>`
 
   window.hub.configPath().then(p => {
-    const el = document.getElementById('cfg-path')
-    if (el) el.textContent = p
-  })
+      const el = document.getElementById('cfg-path')
+      if (el) el.textContent = p
+    })
 
-  renderSvcRows()
+    // версия приложения в блоке «О программе» (из package.json через main)
+    if (window.hub.getVersion) {
+      window.hub.getVersion().then(v => {
+        const el = document.getElementById('about-version')
+        if (el) el.textContent = 'v' + v
+      }).catch(() => {})
+    }
+
+    renderSvcRows()
   renderCssRows()
   renderZoomRows()
   renderPinRows()
@@ -2152,13 +2175,6 @@ function buildSettings(sec) {
     }
   }
 
-  document.getElementById('add-svc').onclick = () => {
-    const id = 's' + Date.now()
-    state.cfg.services.push({ id, name: 'Новый мессенджер', url: 'https://', partition: 'persist:' + id, proxy: '' })
-    state.cfg.columnCss[id] = ''
-    state.cfg.zoom[id] = 1
-    renderSvcRows(); renderCssRows(); renderZoomRows()
-  }
   document.getElementById('save-settings').onclick = async () => {
     await window.hub.saveConfig(state.cfg)
     toast('Сохранено, перезапускаю…')
