@@ -1,0 +1,15 @@
+{
+  "name": "chat-hub",
+  "productName": "ChatHub",
+  "version": "0.1.0",
+  "description": "Все мессенджеры в одном окне: Mattermost, Telegram, MAX, Телемост + сборная вкладка с закреплёнными чатами",
+  "main": "main.js",
+  "author": "Lenovo",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}

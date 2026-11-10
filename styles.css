@@ -1,0 +1,224 @@
+:root {
+  --bg: #1e1f22;
+  --panel: #2b2d31;
+  --head: #232428;
+  --text: #dbdee1;
+  --muted: #949ba4;
+  --border: #3f4147;
+  --accent: #5865f2;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ---------- панель вкладок ---------- */
+#tabbar {
+  flex: 0 0 46px;
+  display: flex;
+  align-items: stretch;
+  background: var(--head);
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  display: flex; align-items: center; padding: 0 16px;
+  font-weight: 700; color: var(--accent); letter-spacing: .4px;
+}
+#tabs { display: flex; gap: 2px; overflow-x: auto; }
+.tab {
+  position: relative;
+  background: none; border: none; cursor: pointer;
+  color: var(--muted);
+  padding: 0 16px; font: inherit; white-space: nowrap;
+  display: flex; align-items: center;
+}
+.tab:hover { color: var(--text); background: var(--panel); }
+.tab.active { color: #fff; background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
+.tab .badge {
+  display: none; margin-left: 7px; background: #da373c; color: #fff;
+  border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 600;
+}
+.tab .badge.on { display: inline-block; }
+.tab .badge.mention { background: #ff453a; font-weight: 800; box-shadow: 0 0 7px rgba(255,69,58,.55); }
+
+#content { flex: 1; position: relative; min-height: 0; }
+/* вкладки через opacity, а не display:none и НЕ visibility:hidden:
+   - display:none — webview не пересчитывает размер при показе (белое поле);
+   - visibility:hidden — гостевая страница не получает кадров, и виртуализированный
+     список диалогов Telegram (UL.virtual-chatlist) рендерит НОЛЬ строк фоном:
+     сбор времени/непрочитанных пустой, а при клике список "догружается" на глазах.
+   opacity:0 — страница продолжает рендериться фоном, списки живые, при клике
+   вкладка открывается мгновенно. pointer-events:none — клики не проваливаются. */
+.tabpane { position: absolute; inset: 0; display: flex; flex-direction: column; opacity: 0; pointer-events: none; z-index: 1; }
+.tabpane.visible { opacity: 1; pointer-events: auto; z-index: 2; }
+/* во время перетаскивания разделителя списка события мыши не должны уходить в webview */
+body.split-dragging { cursor: col-resize; user-select: none; }
+body.split-dragging webview { pointer-events: none !important; }
+
+/* ---------- вкладка мессенджера ---------- */
+.svcbar {
+  flex: 0 0 42px; display: flex; align-items: center; gap: 10px;
+  padding: 0 12px; background: var(--head); border-bottom: 1px solid var(--border);
+}
+.svc-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 10px; }
+.svc-name { font-weight: 600; }
+.svcbar .btn { margin-left: 10px; }
+.svcbar .btn.pin-current { margin-left: auto; }
+.svcbar .fav-menu-wrap { position: relative; margin-left: 10px; }
+.svcbar .fav-menu-wrap .btn { margin-left: 0; }
+.fav-menu {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  min-width: 280px; max-height: 340px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 6px; box-shadow: 0 12px 32px rgba(0,0,0,.45);
+}
+.fav-menu-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
+.fav-menu-item:hover { background: var(--bg); }
+.fav-menu-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13px; }
+.fav-menu-item .icon-btn { opacity: 0; }
+.fav-menu-item:hover .icon-btn { opacity: 1; }
+.fav-menu-empty { color: var(--muted); padding: 8px 10px; font-size: 13px; }
+.btn.pinned { border-color: var(--accent); color: #fff; background: rgba(88, 101, 242, .18); }
+.svc-webview { flex: 1; min-height: 0; width: 100%; background: #fff; }
+
+.btn {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 12px; font: inherit; cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.danger:hover { border-color: #da373c; color: #ff8c8c; }
+
+/* ---------- сборная вкладка: список + чат ---------- */
+.combined { flex: 1; display: flex; min-height: 0; }
+.chat-list-wrap {
+  flex: 0 0 auto;
+  width: 360px;                 /* фактическую ширину ставит renderer из cfg.listWidth */
+  min-width: 220px; max-width: 70vw;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--panel); min-height: 0;
+}
+/* разделитель: тянуть мышью, ширина списка сохраняется в конфиге */
+.list-split { flex: 0 0 5px; cursor: col-resize; background: transparent; }
+.list-split:hover, .list-split.dragging { background: var(--accent); }
+.chat-list-head {
+  flex: 0 0 42px; display: flex; align-items: center; gap: 8px;
+  padding: 0 14px; font-weight: 700; border-bottom: 1px solid var(--border);
+}
+.chat-list-count { color: var(--muted); font-size: 12px; font-weight: 400; }
+/* строка поиска по избранному (как в мессенджерах, с лупой) */
+.chat-list-search {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  margin: 6px 10px 4px; padding: 4px 8px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.chat-list-search:focus-within { border-color: var(--accent); }
+.chat-list-search .search-icon { font-size: 12px; opacity: .7; flex: 0 0 auto; }
+.chat-list-search input {
+  flex: 1; min-width: 0; background: none; border: none; outline: none;
+  color: inherit; font: inherit; font-size: 13px;
+}
+.chat-list-search .search-clear { flex: 0 0 auto; }
+.chat-list-nores { padding: 14px 10px; color: var(--muted); font-size: 13px; text-align: center; }
+.chat-row.filtered-out { display: none; }
+.chat-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 6px; scroll-behavior: smooth; overscroll-behavior: contain; }
+/* современный тонкий скроллбар с автоскрытием (пункт 14 бэклога) */
+.chat-list { scrollbar-width: thin; scrollbar-color: rgba(128,128,128,.35) transparent; }
+.chat-list::-webkit-scrollbar { width: 8px; }
+.chat-list::-webkit-scrollbar-track { background: transparent; }
+.chat-list::-webkit-scrollbar-thumb { background: rgba(128,128,128,.35); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+.chat-list:hover::-webkit-scrollbar-thumb { background: rgba(128,128,128,.6); background-clip: content-box; }
+.chat-list::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.85); background-clip: content-box; }
+.chat-list:not(:hover)::-webkit-scrollbar-thumb { background: transparent; }
+.chat-row { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 9px; cursor: pointer; }
+.chat-row:hover { background: var(--bg); }
+.chat-row.selected { background: rgba(88, 101, 242, .25); }
+.chat-row-text { flex: 1; min-width: 0; }
+.chat-row-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-row-svc { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-row .icon-btn { opacity: 0; flex: 0 0 auto; padding: 2px 5px; }
+.chat-row:hover .icon-btn, .chat-row.selected .icon-btn { opacity: 1; }
+/* ручное закрепление 📌 (как в Telegram): закреплённый чат — полоса + подсвеченный пин */
+.chat-row.priority { box-shadow: inset 3px 0 0 var(--accent); }
+.row-pin-btn { font-size: 13px; line-height: 1; }
+.chat-row.priority .row-pin-btn { color: var(--accent); opacity: 1; }
+.row-badge {
+  flex: 0 0 auto; background: #da373c; color: #fff;
+  border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 600;
+}
+.row-badge.mention { background: #ff453a; font-weight: 800; }
+.svc-badge {
+  flex: 0 0 22px; height: 22px; border-radius: 6px; color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700;
+}
+/* фирменная иконка мессенджера (favicon) вместо буквы */
+.svc-badge.svc-icon {
+  padding: 2px; background: #fff; object-fit: contain; border-radius: 5px;
+}
+.chat-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.view-head {
+  flex: 0 0 42px; display: flex; align-items: center; gap: 10px;
+  padding: 0 12px; background: var(--head); border-bottom: 1px solid var(--border);
+}
+.view-title {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-weight: 600; cursor: pointer;
+}
+.view-title:hover { color: #fff; text-decoration: underline; }
+.view-svc { color: var(--muted); font-size: 12px; flex: 0 0 auto; }
+.chat-view-stack { flex: 1; position: relative; min-height: 0; }
+/* скрытие через opacity (как .tabpane выше): не display:none (размер теряется)
+   и не visibility:hidden (гость не получает кадров — виртуальный список TG пуст).
+   Активная вьюха поверх остальных через z-index. */
+.chat-webview { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 1; }
+.chat-webview.active { opacity: 1; pointer-events: auto; z-index: 2; }
+
+.icon-btn {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font: inherit; padding: 3px 7px; border-radius: 5px;
+}
+.icon-btn:hover { background: var(--panel); color: #fff; }
+
+.empty {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; text-align: center; color: var(--muted); padding: 30px;
+}
+.empty-emoji { font-size: 44px; margin-bottom: 10px; }
+.empty h2 { color: var(--text); margin: 0 0 8px; }
+.hidden { display: none !important; }
+
+/* ---------- настройки ---------- */
+.settings { flex: 1; overflow-y: auto; padding: 22px 28px 60px; max-width: 980px; }
+.settings h2 { margin: 0 0 4px; }
+.settings h3 { margin: 26px 0 8px; color: var(--text); }
+.hint { color: var(--muted); font-size: 12.5px; }
+.form-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
+.form-row input { flex: 1; }
+.form-row .f-url { flex: 2; }
+.zoom-label { flex: 1; }
+.css-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.css-row label { color: var(--muted); font-size: 12.5px; }
+.css-row textarea { width: 100%; resize: vertical; }
+input, textarea {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 7px 9px; font: inherit;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+.pin-idx { color: var(--muted); width: 22px; }
+.settings-actions { margin-top: 28px; display: flex; gap: 10px; }
+
+#toast {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  background: #111214; color: #fff; border: 1px solid var(--border);
+  padding: 9px 16px; border-radius: 9px; opacity: 0; transition: opacity .25s;
+  pointer-events: none; z-index: 99; max-width: 70vw;
+}
+#toast.show { opacity: 1; }
