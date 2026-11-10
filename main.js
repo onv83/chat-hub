@@ -20,7 +20,7 @@ if (process.env.CHATHUB_DEV_DATA) {
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
-  cssDefaultsVersion: 3,
+  cssDefaultsVersion: 4,
   tabIcons: false,
   services: [
     { id: 'mm',  name: 'Mattermost',             url: 'https://im.astralinux.ru',    partition: 'persist:mm' },
@@ -31,10 +31,19 @@ const DEFAULT_CONFIG = {
   // CSS применяется ТОЛЬКО к колонкам сборной вкладки (прячем боковые панели),
   // вкладки самих мессенджеров не трогаем.
   columnCss: {
-    // Правая панель Mattermost содержит тред (RHS); прячем только навигацию слева.
-    mm: '#SidebarContainer,#sidebar-left,.sidebar--left{display:none!important}',
-    tg: '.sidebar,.right-column{display:none!important}',
-    max: '.app>aside{display:none!important}.app>main{width:100%!important}',
+    // MM: в пинах только лента чата. Скрыты: навигация слева, вся верхняя полоса
+    // (#global-header: продукты, поиск, помощь), шапка канала (.channel-header:
+    // кнопка Channel, избранное, участники, файлы) и полоса плагинов (.app-bar:
+    // focalboard, playbooks, todo). Правая панель треда (RHS) НЕ скрывается —
+    // треды по «N ответов» работают; открытая с прошлой сессии панель
+    // закрывается один раз при загрузке пин-вьюхи (см. ensurePinView).
+    mm: '#SidebarContainer,#sidebar-left,.sidebar--left,.team-sidebar{display:none!important}#global-header{display:none!important}.channel-header{display:none!important}.app-bar{display:none!important}',
+    // TG: вместо фиксированного сдвига -202px (при сужении уводил чат за левый
+    // край) — растяжка #column-center на контейнер (absolute: left/right 0).
+    tg: '.sidebar,.right-column{display:none!important} #column-center{margin:0!important;left:0!important;right:0!important;width:auto!important;max-width:none!important;transform:none!important}',
+    // MAX: без фиксированного -77px (та же болезнь при сужении). На >=950px
+    // MAX сам пересчитывает grid — не трогаем; пустой трек 77px там допустим.
+    max: '.app>aside{display:none!important}.app>main{width:100%!important}.app{margin:0!important;width:100%!important;max-width:none!important;min-width:0!important;box-sizing:border-box!important}',
     ydx: '.yamb-root__layout>.ui-layout_direction_column,.yamb-sidebar{display:none!important}'
   },
   zoom: { mm: 1, tg: 1, max: 1, ydx: 1 },
