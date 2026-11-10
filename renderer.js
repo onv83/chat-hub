@@ -376,12 +376,18 @@ function refreshTabIcons() {
 function applyBadgeVisibility() {
   document.body.classList.toggle('hide-badges', state.cfg.badgeVisible === false)
   document.body.classList.toggle('hide-svc-badge', state.cfg.svcBadgeVisible === false)
+  document.body.classList.toggle('fav-badge-always', state.cfg.favBadgeAlways === true)
 }
 
 // применить сохранённый вид (вкладки сверху / панель слева)
+function applyTabIcons() {
+  document.body.classList.toggle('tab-icons', state.cfg.tabIcons === true)
+}
+
 function applyLayout() {
   const sidebar = state.cfg.layout === 'sidebar'
   document.body.classList.toggle('layout-sidebar', sidebar)
+  applyTabIcons()
   const bar = document.getElementById('tabbar')
   if (!sidebar) {
     document.body.classList.remove('sb-rail')
@@ -2496,11 +2502,15 @@ function buildSettings(sec) {
       <div class="form-row">
         <label style="flex:1"><input type="radio" name="layout" value="tabs"> Вкладки сверху</label>
         <label style="flex:1"><input type="radio" name="layout" value="sidebar"> Панель слева</label>
+        <label style="flex:1"><input type="checkbox" id="tab-icons"> Показывать иконки на вкладках (сверху)</label>
       </div>
       <p class="hint">Панель слева тянется за правый край: шире — значки с надписями,
       уже — только большие значки мессенджеров. Переключение применяется сразу.</p>
       <div class="form-row">
         <label><input type="checkbox" id="badge-visible"> Показывать счётчики непрочитанных (красные и @) на вкладках</label>
+      </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="fav-badge-always"> У ★ Сборной всегда показывать счётчик новых</label>
       </div>
       <div class="form-row">
         <label><input type="checkbox" id="svcbadge-visible"> Показывать значок мессенджера у чатов в избранном</label>
@@ -2581,6 +2591,24 @@ function buildSettings(sec) {
       badgeCb.onchange = () => {
         state.cfg.badgeVisible = badgeCb.checked
         applyBadgeVisibility()
+        window.hub.saveConfig(state.cfg).catch(() => {})
+      }
+    }
+    const favBadgeCb = document.getElementById('fav-badge-always')
+    if (favBadgeCb) {
+      favBadgeCb.checked = state.cfg.favBadgeAlways === true
+      favBadgeCb.onchange = () => {
+        state.cfg.favBadgeAlways = favBadgeCb.checked
+        applyBadgeVisibility()
+        window.hub.saveConfig(state.cfg).catch(() => {})
+      }
+    }
+    const tabIconsCb = document.getElementById('tab-icons')
+    if (tabIconsCb) {
+      tabIconsCb.checked = state.cfg.tabIcons === true
+      tabIconsCb.onchange = () => {
+        state.cfg.tabIcons = tabIconsCb.checked
+        applyTabIcons()
         window.hub.saveConfig(state.cfg).catch(() => {})
       }
     }

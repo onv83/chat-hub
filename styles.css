@@ -52,6 +52,10 @@ body {
 .tab .badge + .badge { margin-left: 4px; }
 /* настройка «скрыть счётчики на вкладках»: и красные, и @-чипы */
 body.hide-badges #tabbar .badge { display: none !important; }
+/* «У ★ Сборной всегда показывать счётчик новых»: возвращаем оба бейджа вкладки Сборной
+   (общий счётчик и @-чип). Только непустые: класс .on ставится в updateBadge2
+   ровно при total > 0 / mentions > 0, поэтому пустой бейдж не превращается в пустую коробку. */
+body.hide-badges.fav-badge-always #tabbar .tab[data-tab="combined"] .badge.on { display: inline-block !important; }
 /* настройка «скрыть значок мессенджера в избранном» */
 body.hide-svc-badge .svc-badge { display: none !important; }
 
@@ -267,6 +271,13 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 
 /* ---------- ВИД: панель слева (как в Ferdium) ---------- */
 .tab-icon { display: none; }
+body.tab-icons:not(.layout-sidebar) .tab-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex: 0 0 18px;
+  margin-right: 6px; overflow: hidden;
+  color: var(--text); font-size: 11px; font-weight: 600;
+}
+body.tab-icons:not(.layout-sidebar) .tab-icon img { width: 16px; height: 16px; }
 #sb-footer, #sb-resizer { display: none; }
 
 body.layout-sidebar { flex-direction: row; }
