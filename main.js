@@ -1,5 +1,5 @@
 // ChatHub — все мессенджеры в одном окне + сборная вкладка с закреплёнными чатами
-const { app, BrowserWindow, ipcMain, session, shell, webContents } = require('electron')
+const { app, BrowserWindow, ipcMain, session, shell, webContents, Menu } = require('electron')
 const path = require('path')
 const fs = require('fs')
 
@@ -260,6 +260,8 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    // скрываем штатное меню Electron (File/Edit/View…) — окно полностью наше
+    Menu.setApplicationMenu(null)
     // Разрешаем мессенджерам уведомления, камеру и микрофон (Telemost-звонки и т.п.)
     const allow = (_wc, _perm, cb) => cb(true)
     for (const svc of config.services) {
