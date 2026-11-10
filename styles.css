@@ -28,9 +28,11 @@ body {
   border-bottom: 1px solid var(--border);
 }
 .brand {
-  display: flex; align-items: center; padding: 0 16px;
-  font-weight: 700; color: var(--accent); letter-spacing: .4px;
+  display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  font-weight: 700; color: var(--text); letter-spacing: .4px;
 }
+.brand-icon { width: 20px; height: 20px; flex: 0 0 20px; }
+.brand-name b { color: var(--accent); font-weight: 800; }
 #tabs { display: flex; gap: 2px; overflow-x: auto; }
 .tab {
   position: relative;
@@ -309,7 +311,8 @@ body.sb-resizing webview { pointer-events: none !important; }
 
 /* узкая панель — только большие значки */
 body.layout-sidebar.sb-rail #tabbar { width: 76px !important; }
-body.layout-sidebar.sb-rail .brand { padding: 10px 0; justify-content: center; text-align: center; font-size: 12px; }
+body.layout-sidebar.sb-rail .brand { padding: 10px 0; justify-content: center; }
+body.layout-sidebar.sb-rail .brand .brand-name { display: none; }
 body.layout-sidebar.sb-rail #tabs { padding: 8px 0; }
 body.layout-sidebar.sb-rail .tab { flex-direction: column; gap: 5px; padding: 9px 0; justify-content: center; }
 body.layout-sidebar.sb-rail .tab .tab-label { display: none; }
