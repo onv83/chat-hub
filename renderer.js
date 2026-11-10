@@ -634,6 +634,10 @@ async function pinCurrentChat(svc) {
   const wv = state.svcViews[svc.id]
   if (!wv) return
   let url = wv.getURL()
+  // SPA-мессенджеры (Телемост) меняют URL ПОСЛЕ открытия чата, а getURL
+  // может отдать прежний адрес (корень списка): берём свежий location.href
+  // прямо со страницы — он всегда актуален.
+  try { url = (await wv.executeJavaScript('location.href')) || url } catch (e) {}
   if (!url || url === 'about:blank') { toast('Чат ещё не открыт'); return }
   // webk иногда живёт на URL без хеша (открыт список чатов) — закреплять нечего
   if (svc.id === 'tg' && !/#.+/.test(url)) { toast('Сначала откройте чат в Telegram'); return }
@@ -647,7 +651,13 @@ async function pinCurrentChat(svc) {
     ydx: /\/chats\//
   }
   const chatRe = CHAT_URL_RE[svc.id]
-  if (chatRe && !chatRe.test(url)) { toast('Сначала откройте конкретный чат, а не список'); return }
+  if (chatRe && !chatRe.test(url)) {
+    // URL мог ещё не догнать SPA-переход (чат открывается, адрес появится
+    // через мгновение) — даём полторы секунды и перечитываем
+    await new Promise(r => setTimeout(r, 1500))
+    try { url = (await wv.executeJavaScript('location.href')) || url } catch (e) {}
+    if (chatRe && !chatRe.test(url)) { toast('Сначала откройте конкретный чат, а не список'); return }
+  }
   const title = (await getChatNameFor(svc.id, wv, url)) || 'Чат'
   const key = pinKeyOf(svc.id, url, title)
   if (state.cfg.pinned.some(p => (p.key || (p.serviceId + '|' + p.url)) === key)) { toast('Этот чат уже в избранном'); return }
