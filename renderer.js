@@ -1631,6 +1631,9 @@ async function pollUnread() {
         if (extra && extra.favs && extra.favs.length) {
           const byId = new Map(((res && res.favs) || []).map(f => [f.id, f]))
           for (const f of extra.favs) {
+            // аватарку из обычного сбора не теряем: объект поиска её не несёт
+            const prev = byId.get(f.id)
+            if (prev && prev.avatar && !f.avatar) f.avatar = prev.avatar
             byId.set(f.id, f)
             if (f.pidStale) { try { delete state.tgPeerOf[f.id] } catch (e) {} }
             else if (f.pid && (!state.tgPeerOf[f.id] || String(state.tgPeerOf[f.id]) === String(f.pid))) {
