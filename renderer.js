@@ -651,7 +651,7 @@ async function pinCurrentChat(svc) {
   const CHAT_URL_RE = {
     mm: /\/(channels|messages|pl)\//,
     tg: /#/,
-    max: /\/-\d+/,
+    max: /\/-?\d+/,
     ydx: /\/(chats|user)\//
   }
   const chatRe = CHAT_URL_RE[svc.id]
