@@ -30,7 +30,7 @@ function maxLiveViews() { return parseInt(state.cfg.maxLiveViews, 10) > 0 ? pars
 // Селекторы заголовка открытого чата (имя при добавлении в избранное)
 const NAME_SELECTORS = {
   mm: ['#channelHeaderTitle', '[data-testid="channelHeaderTitle"]', '.channel-header__title'],
-  tg: ['.topbar .peer-title', '.chat-info .peer-title', '.peer-title'],
+  tg: ['.top .user-title .peer-title', '.top .peer-title', '.topbar .peer-title', '.chat-info .peer-title'],
   max: ['.app main h1', '.app main .title', '.app main h2'],
   ydx: []
 }
@@ -146,6 +146,7 @@ async function init() {
   buildTabs()
   applyTheme()
   applyLayout()
+  applyBadgeVisibility()
   refreshTabIcons()
   activateTab('combined')
   initListSplitter()
@@ -328,7 +329,7 @@ function buildTabs() {
     tabs.appendChild(b)
     return b
   }
-  const cb = mk('combined', '★ Сборная')
+  const cb = mk('combined', 'Сборная')
   const cbadge = document.createElement('span')
   cbadge.className = 'badge'
   cb.appendChild(cbadge)
@@ -346,7 +347,7 @@ function buildTabs() {
     mbadge.className = 'badge badge-m'
     b.appendChild(mbadge)
   }
-  mk('settings', '⚙ Настройки')
+  mk('settings', 'Настройки')
 }
 
 /* ---------- вид «панель слева» (как в Ferdium) + тема ---------- */
@@ -370,6 +371,11 @@ function refreshTabIcons() {
       else ic.textContent = firstLetter(id.slice(4))
     }
   })
+}
+
+function applyBadgeVisibility() {
+  document.body.classList.toggle('hide-badges', state.cfg.badgeVisible === false)
+  document.body.classList.toggle('hide-svc-badge', state.cfg.svcBadgeVisible === false)
 }
 
 // применить сохранённый вид (вкладки сверху / панель слева)
@@ -720,7 +726,11 @@ async function getChatNameFor(svcId, wv, pinUrl) {
         const t = row ? row.querySelector('.peer-title') : null
         if (t && t.textContent.trim()) return t.textContent.trim()
         if (String(location.hash || '') === '#' + pid) {
-          const h = document.querySelector('.topbar .peer-title, .chat-info .peer-title, .peer-title')
+          // шапка ОТКРЫТОГО чата — только точные селекторы топбара webk
+          // (.top .user-title .peer-title). Голый '.peer-title' НЕЛЬЗЯ:
+          // он матчит ПЕРВУЮ строку списка чатов (закреплённый канал),
+          // из-за него пин «Анна Медведева» переименовался в «Data Science»
+          const h = document.querySelector('.top .user-title .peer-title, .top .peer-title, .topbar .peer-title, .chat-info .peer-title')
           if (h && h.textContent.trim()) return h.textContent.trim()
         }
         if (pid.startsWith('@')) return decodeURIComponent(pid.slice(1)).replace(/[_\\.]+/g, ' ')
@@ -2135,6 +2145,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
       }
       list.push({
         pid: pid,
+        u: r.getAttribute('href') || '',
         title: title,
         time: tp ? tp.textContent.trim() : '',
         unreadTxt: bd ? bd.textContent.trim() : '',
@@ -2224,6 +2235,12 @@ async function __chatHubTgUnread(favs, allowScroll) {
         const bn = norm(cands[0].title)
         if (cands.filter(c => norm(c.title) === bn).length === 1) row = cands[0]
       }
+    }
+    // фолбэк для @username-пинов: пин сохранён как #@имя (числового peer-id
+    // нет), заголовок пина пользовательский — матчу строку по её href
+    if (!row) {
+      const uname = (String(f.url).match(/#(@[-\w]+)/) || [])[1]
+      if (uname) row = rows.find(x => x.u === '#' + uname) || null
     }
     let unread = false
     let count = 0
@@ -2426,6 +2443,12 @@ function buildSettings(sec) {
       </div>
       <p class="hint">Панель слева тянется за правый край: шире — значки с надписями,
       уже — только большие значки мессенджеров. Переключение применяется сразу.</p>
+      <div class="form-row">
+        <label><input type="checkbox" id="badge-visible"> Показывать счётчики непрочитанных (красные и @) на вкладках</label>
+      </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="svcbadge-visible"> Показывать значок мессенджера у чатов в избранном</label>
+      </div>
 
       <h3>Тема</h3>
       <div class="form-row">
@@ -2495,6 +2518,26 @@ function buildSettings(sec) {
         toast(r.value === 'sidebar' ? 'Панель слева' : 'Вкладки сверху')
       }
     })
+    // счётчики непрочитанных на вкладках: красные и @ — видимость
+    const badgeCb = document.getElementById('badge-visible')
+    if (badgeCb) {
+      badgeCb.checked = state.cfg.badgeVisible !== false
+      badgeCb.onchange = () => {
+        state.cfg.badgeVisible = badgeCb.checked
+        applyBadgeVisibility()
+        window.hub.saveConfig(state.cfg).catch(() => {})
+      }
+    }
+    // значок мессенджера у чатов в избранном — видимость
+    const svcCb = document.getElementById('svcbadge-visible')
+    if (svcCb) {
+      svcCb.checked = state.cfg.svcBadgeVisible !== false
+      svcCb.onchange = () => {
+        state.cfg.svcBadgeVisible = svcCb.checked
+        applyBadgeVisibility()
+        window.hub.saveConfig(state.cfg).catch(() => {})
+      }
+    }
     // тема: тёмная / светлая — тоже сразу
     document.querySelectorAll('input[name="theme"]').forEach(r => {
       r.checked = (r.value === (state.cfg.theme || 'dark'))
