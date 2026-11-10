@@ -453,46 +453,8 @@ function ensureSbChrome(bar) {
 }
 
 // применить тему (тёмная по умолчанию / светлая)
-/* MM (Mattermost) тему в настройках аккаунта держит сам и prefers-color-scheme
-   не слушает. Но его тема — 107 CSS-переменных ИНЛАЙН на <html>:
-   documentElement.style.setProperty перебивает их (инлайн = высший приоритет),
-   MM не затирает. Светлая тема ChatHub → подменяем ключевые переменные,
-   тёмная → снимаем наши (возвращаются исходные). Работает живо, без reload. */
-const MM_LIGHT_VARS = {
-  '--center-channel-bg-rgb': '255, 255, 255', '--center-channel-bg': '#ffffff',
-  '--center-channel-color-rgb': '49, 50, 52', '--center-channel-color': '#313234',
-  '--sidebar-bg-rgb': '242, 244, 247', '--sidebar-bg': '#f2f4f7',
-  '--sidebar-text-rgb': '49, 50, 52', '--sidebar-text': '#313234',
-  '--sidebar-header-bg-rgb': '247, 248, 250', '--sidebar-teambar-bg-rgb': '247, 248, 250',
-  '--sidebar-header-text-color-rgb': '49, 50, 52', '--sidebar-unread-text-rgb': '49, 50, 52',
-  '--sidebar-text-active-color-rgb': '49, 50, 52', '--sidebar-text-hover-bg-rgb': '232, 235, 240',
-  '--sidebar-text-active-border-rgb': '74, 124, 232',
-  '--link-color-rgb': '33, 82, 196',
-  '--mention-bg-rgb': '255, 246, 214', '--mention-color-rgb': '49, 50, 52',
-  '--mention-highlight-bg-rgb': '255, 246, 214', '--mention-highlight-link-rgb': '33, 82, 196',
-  '--own-highlight-bg-rgb': '235, 244, 255',
-  '--pinned-highlight-bg-mixed-rgb': '232, 240, 252',
-  '--new-message-separator-rgb': '74, 124, 232'
-}
-
-const mmThemeExpr = (light) => {
-  const sets = Object.entries(MM_LIGHT_VARS).map(([k, v]) =>
-    'document.documentElement.style.setProperty(' + JSON.stringify(k) + ', ' + JSON.stringify(v) + ')').join('; ')
-  const removes = Object.keys(MM_LIGHT_VARS).map(k =>
-    'document.documentElement.style.removeProperty(' + JSON.stringify(k) + ')').join('; ')
-  return '(function(){try{' + (light ? sets : removes) + ';return "ok"}catch(e){return String(e)}})()'
-}
-
-async function applyMmTheme(theme) {
-  const views = [state.svcViews['mm']]
-  for (const [pid, wv] of Object.entries(state.pinViews || {})) {
-    const pin = (state.cfg.pinned || []).find(p => p.id === pid)
-    if (pin && pin.serviceId === 'mm' && wv) views.push(wv)
-  }
-  for (const wv of views.filter(Boolean)) {
-    try { await wv.executeJavaScript(mmThemeExpr(theme === 'light')) } catch (e) {}
-  }
-}
+/* MM управляет своей темой сам (настройки аккаунта Mattermost, у пользователя тёмная).
+   ChatHub тему MM не подменяет: эксперимент с белой темой MM отменён. */
 
 function applyTheme() {
   document.body.classList.toggle('theme-light', state.cfg.theme === 'light')
@@ -500,8 +462,6 @@ function applyTheme() {
   // prefers-color-scheme («системная тема») — переключаем nativeTheme
   // через main, тогда веб-версии следуют за темой ChatHub
   try { window.hub.setThemeSource(state.cfg.theme === 'light' ? 'light' : 'dark') } catch {}
-  // MM красим отдельно (localStorage + перезагрузка вьюх)
-  applyMmTheme(state.cfg.theme)
 }
 
 function activateTab(id) {
@@ -626,13 +586,10 @@ function buildSection(id, deferSrc) {
     // Календарь/Заметки) — скрываем и в сервисной вкладке, и в пин-вьюхах
     // (в пин-вьюхах ещё и через columnCss — там лишняя полоса слева вдвойне мешает)
     if (svc.id === 'ydx') { try { wv.insertCSS('[class^="GlobalBarRoot"]{display:none !important}') } catch (e) {} }
-    // MAX: левый сайдбар скрываем БЕЗ правки grid-сетки (она разная на разных
-    // экранах, жёсткая замена ломала и основную вкладку, и пин-вьюхи):
-    // прячем navigation и сдвигаем .app влево на ширину колонки — пустота
-    // уезжает за левый край, все родные сетки остаются как есть
-    if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app{margin-left:-77px !important; width:calc(100% + 77px) !important; max-width:none !important}') } catch (e) {} }
-    // MM: если выбрана светлая тема — красим вьюху и при её (пере)загрузке
-    if (svc.id === 'mm' && state.cfg.theme === 'light') { try { wv.executeJavaScript(mmThemeExpr(true)).catch(() => {}) } catch (e) {} }
+    // MAX: прячем navigation; .app растягиваем на всю ширину БЕЗ фиксированного
+    // сдвига (-77px при сужении уводил чат за левый край). Grid-сетку на >=950px
+    // MAX пересчитывает сам — не трогаем, пустой трек 77px там допустим.
+    if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app{margin:0 !important; width:100% !important; max-width:none !important; min-width:0 !important; box-sizing:border-box !important}') } catch (e) {} }
   })
 
   const menuBtn = bar.querySelector('.open-fav-menu')
@@ -1032,7 +989,17 @@ function ensurePinView(p) {
   if (stack) stack.appendChild(wv)
   state.pinViews[p.id] = wv
   enqueueLoad(wv, p.url, p.id === state.cfg.selectedPinId)
-  wv.addEventListener('dom-ready', () => { applyColumnTweaks(wv, p); captureSvcIcon(svc.id, wv) })
+  wv.addEventListener('dom-ready', () => {
+    applyColumnTweaks(wv, p)
+    captureSvcIcon(svc.id, wv)
+    // MM: правая панель (RHS) могла остаться открытой с прошлой сессии — закрываем
+    // один раз после загрузки. Треды по «N ответов» продолжают открываться (п.12).
+    if (svc.id === 'mm') setTimeout(() => {
+      try {
+        wv.executeJavaScript('(function(){var b=document.querySelector("#rhsCloseButton");if(b){var r=b.getBoundingClientRect();if(r.width>0&&r.height>0){b.click();return "closed"}}return "no-rhs"})()').catch(() => {})
+      } catch (e) {}
+    }, 2500)
+  })
   wv.addEventListener('did-navigate-in-page', () => setTimeout(() => applyColumnTweaks(wv, p), 400))
   // страховка: если CSS потерялся (медленный старт SPA, самообновление страницы) — вернуть
   wv.__hubTimer = setInterval(async () => {
@@ -2519,7 +2486,7 @@ function buildSettings(sec) {
       <h3>Тема</h3>
       <div class="form-row">
         <label style="flex:1"><input type="radio" name="theme" value="dark"> Тёмная</label>
-        <label style="flex:1"><input type="radio" name="theme" value="light"> Светлая</label>
+        <label style="flex:1"><input type="radio" name="theme" value="light"> Светлая (мм не поддерживается)</label>
       </div>
 
       <h3>Мессенджеры (вкладки)</h3>
