@@ -2145,15 +2145,15 @@ async function __chatHubTgUnread(favs, allowScroll) {
         .filter(c => { const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50 })
       return cs[0] || null
     }
-    const sup = document.querySelector('.search-super')
-    if (!sup && scr()) {
-      for (let step = 0; step < 40; step++) {
+    const supH = (() => { const s = document.querySelector('.search-super'); return s ? s.getBoundingClientRect().height : 0 })()
+    if (supH < 50 && scr()) {
+      for (let step = 0; step < 60; step++) {
         const c = scr()
         if (!c) break
         const before = c.scrollTop
-        c.scrollTop = Math.min(c.scrollTop + 600, c.scrollHeight)
+        c.scrollTop = Math.min(c.scrollTop + 800, c.scrollHeight)
         c.dispatchEvent(new Event('scroll', { bubbles: true }))
-        await sleep(350)
+        await sleep(300)
         collect().forEach(x => { if (!seen.has(x.pid)) seen.set(x.pid, x) })
         if (c.scrollTop === before) break // дно списка
       }
