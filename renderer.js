@@ -573,7 +573,7 @@ function makeChatRow(p) {
   row.className = 'chat-row'
   row.dataset.pin = p.id
   row.innerHTML = `
-    ${state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
+    ${svc && state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
     <div class="chat-row-text">
       <div class="chat-row-title"></div>
       <div class="chat-row-svc"></div>
@@ -583,7 +583,7 @@ function makeChatRow(p) {
     <button class="icon-btn row-del" title="Убрать из избранного">✕</button>`
   const badge = row.querySelector('.svc-badge')
   badge.dataset.svc = svc ? svc.id : ''
-  if (state.svcIcons[svc.id]) badge.src = state.svcIcons[svc.id]
+  if (svc && state.svcIcons[svc.id]) badge.src = state.svcIcons[svc.id]
   else {
     badge.textContent = Array.from(svcName.trim())[0] || '?'
     badge.style.background = badgeColor(svcName)
@@ -748,13 +748,13 @@ function renderViewHead(p, svc) {
   const head = document.getElementById('view-head')
   if (!head) return
   head.innerHTML = `
-    ${state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
+    ${svc && state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
     <span class="view-title"></span>
     <span class="view-svc"></span>
     <button class="icon-btn" id="vh-open" title="Открыть во вкладке мессенджера">↗</button>
     <button class="icon-btn" id="vh-close" title="Убрать из избранного">✕</button>`
   const b = head.querySelector('.svc-badge')
-  if (state.svcIcons[svc.id]) b.src = state.svcIcons[svc.id]
+  if (svc && state.svcIcons[svc.id]) b.src = state.svcIcons[svc.id]
   else {
     b.textContent = Array.from(svc.name.trim())[0] || '?'
     b.style.background = badgeColor(svc.name)
