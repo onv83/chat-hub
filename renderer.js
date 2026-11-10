@@ -44,12 +44,48 @@ const UNREAD_EXTRACTORS = {
   ydx: __chatHubYdxUnread
 }
 
+// Аватарка чата из строки списка мессенджера: <img> строки или
+// background-image у аватар-элемента; конвертируется в data-URL ВНУТРИ
+// webview (сессия/относительные URL недоступны шеллу). Определяется в
+// шелле и пробрасывается в экстракторы обёрткой в pollUnread.
+function __chatHubGrabAvatar(el) {
+  return (async () => {
+    try {
+      if (!el) return null
+      let src = ''
+      const img = el.querySelector('img')
+      if (img && img.src && (img.naturalWidth === 0 || img.naturalWidth > 8)) src = img.src
+      if (!src) {
+        const bgEl = el.querySelector('[style*="background-image"]') ||
+          el.querySelector('.dialog-avatar, .UserPic, .Orb-UserPic, .avatar, [class*="avatar"]')
+        if (bgEl) {
+          const m = String(getComputedStyle(bgEl).backgroundImage || '').match(/url\(["']?(.+?)["']?\)/)
+          if (m && m[1] && m[1] !== 'none') src = m[1]
+        }
+      }
+      if (!src) return null
+      if (src.startsWith('data:')) return src
+      const blob = await fetch(src).then(r => r.blob()).catch(() => null)
+      if (!blob || !blob.size || blob.size > 300000) return null
+      return await new Promise(res => {
+        const fr = new FileReader()
+        fr.onload = () => res(fr.result)
+        fr.onerror = () => res(null)
+        fr.readAsDataURL(blob)
+      })
+    } catch (e) { return null }
+  })()
+}
+
 init()
 
 async function init() {
   state.cfg = await window.hub.getConfig()
   ensureKeys(state.cfg)
   buildTabs()
+  applyTheme()
+  applyLayout()
+  refreshTabIcons()
   activateTab('combined')
   initListSplitter()
   // вкладки мессенджеров грузим сразу при старте (панели скрыты через visibility,
@@ -220,6 +256,9 @@ function buildTabs() {
     const b = document.createElement('button')
     b.className = 'tab'
     b.dataset.tab = id
+    const ic = document.createElement('span')
+    ic.className = 'tab-icon'
+    b.appendChild(ic)
     const s = document.createElement('span')
     s.className = 'tab-label'
     s.textContent = label
@@ -247,6 +286,102 @@ function buildTabs() {
     b.appendChild(mbadge)
   }
   mk('settings', '⚙ Настройки')
+}
+
+/* ---------- вид «панель слева» (как в Ferdium) + тема ---------- */
+
+// иконки вкладок: Сборная ★, настройки ⚙, мессенджеры — favicon (data-URL)
+// или первая буква названия, пока favicon не захвачен
+function refreshTabIcons() {
+  const firstLetter = svcId => {
+    const svc = (state.cfg.services || []).find(s => s.id === svcId)
+    return svc && svc.name ? svc.name.trim().charAt(0).toUpperCase() : '?'
+  }
+  document.querySelectorAll('#tabs .tab').forEach(b => {
+    const ic = b.querySelector('.tab-icon')
+    if (!ic) return
+    const id = b.dataset.tab || ''
+    if (id === 'combined') ic.textContent = '★'
+    else if (id === 'settings') ic.textContent = '⚙'
+    else if (id.startsWith('svc:')) {
+      const url = state.svcIcons[id.slice(4)]
+      if (url) { ic.innerHTML = '<img alt="" src="' + url + '">' }
+      else ic.textContent = firstLetter(id.slice(4))
+    }
+  })
+}
+
+// применить сохранённый вид (вкладки сверху / панель слева)
+function applyLayout() {
+  const sidebar = state.cfg.layout === 'sidebar'
+  document.body.classList.toggle('layout-sidebar', sidebar)
+  const bar = document.getElementById('tabbar')
+  if (!sidebar) {
+    document.body.classList.remove('sb-rail')
+    bar.style.width = ''
+    return
+  }
+  ensureSbChrome(bar)
+  setSbWidth(Number(state.cfg.sidebarWidth) || 230)
+}
+
+function setSbWidth(px) {
+  const bar = document.getElementById('tabbar')
+  const rail = px < 100
+  document.body.classList.toggle('sb-rail', rail)
+  bar.style.width = (rail ? 76 : Math.round(px)) + 'px'
+}
+
+// ресайзер + футер с версией живут внутри панели; в виде «вкладки сверху» скрыты CSS-ом
+function ensureSbChrome(bar) {
+  if (document.getElementById('sb-resizer')) return
+  const resizer = document.createElement('div')
+  resizer.id = 'sb-resizer'
+  resizer.title = 'Потяните, чтобы изменить ширину панели'
+  bar.appendChild(resizer)
+  resizer.addEventListener('mousedown', (e) => {
+    e.preventDefault()
+    document.body.classList.add('sb-resizing')
+    // drag: единый clamp 76..420, rAF-троттлинг (каждый mousemove дёргает
+    // layout живых webview — иначе рвётся кадрами)
+    let raf = 0
+    const apply = px => setSbWidth(Math.max(76, Math.min(420, px)))
+    const move = ev => {
+      const px = ev.clientX
+      if (raf) return
+      raf = requestAnimationFrame(() => { raf = 0; apply(px) })
+    }
+    const finish = ev => {
+      document.removeEventListener('mousemove', move)
+      document.removeEventListener('mouseup', finish)
+      window.removeEventListener('blur', finish)
+      if (raf) cancelAnimationFrame(raf)
+      document.body.classList.remove('sb-resizing')
+      // mouseup вне окна не приходит — blur финализирует тем же кодом
+      const rail = document.body.classList.contains('sb-rail')
+      state.cfg.sidebarWidth = rail ? 76 : Math.max(100, Math.min(420, Math.round(ev.clientX)))
+      window.hub.saveConfig(state.cfg).catch(() => {})
+    }
+    document.addEventListener('mousemove', move)
+    document.addEventListener('mouseup', finish)
+    // окно потеряло фокус посреди drag — снимаем захваченное состояние,
+    // иначе body.sb-resizing (cursor/user-select) залипает
+    window.addEventListener('blur', finish)
+  })
+  const footer = document.createElement('div')
+  footer.id = 'sb-footer'
+  footer.title = 'О программе и настройки'
+  footer.textContent = 'ChatHub'
+  footer.onclick = () => activateTab('settings')
+  bar.appendChild(footer)
+  if (window.hub.getVersion) {
+    window.hub.getVersion().then(v => { footer.textContent = 'ChatHub v' + v }).catch(() => {})
+  }
+}
+
+// применить тему (тёмная по умолчанию / светлая)
+function applyTheme() {
+  document.body.classList.toggle('theme-light', state.cfg.theme === 'light')
 }
 
 function activateTab(id) {
@@ -612,6 +747,7 @@ function makeChatRow(p) {
   row.dataset.pin = p.id
   row.innerHTML = `
     ${svc && state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
+    <span class="row-avatar" aria-hidden="true"></span>
     <div class="chat-row-text">
       <div class="chat-row-title"></div>
       <div class="chat-row-svc"></div>
@@ -626,6 +762,9 @@ function makeChatRow(p) {
     badge.textContent = Array.from(svcName.trim())[0] || '?'
     badge.style.background = badgeColor(svcName)
   }
+  // аватарка чата (после иконки мессенджера): картинка из кэша экстрактора
+  // или монограмма-заглушка цветом по названию — пока не поймали
+  setRowAvatar(row)
   row.classList.toggle('priority', !!p.priority)
   badge.title = svcName
   const ttl = row.querySelector('.chat-row-title')
@@ -792,6 +931,7 @@ async function captureSvcIcon(svcId, wv) {
       state.svcIcons[svcId] = dataUrl
       // перерисовать строки: буквы → фирменные иконки
       renderChatList()
+      refreshTabIcons()
     }
   } catch (e) {}
 }
@@ -1396,8 +1536,13 @@ async function pollUnread() {
         // не добирается до виртуализированных строк ниже первого экрана)
         const pane = document.querySelector('section[data-tab="svc:' + svc.id + '"]')
         const allowScroll = !(pane && pane.classList.contains('visible'))
+        // аватарки: шлём флаг needAvatar для пинов без закэшированной
+        // аватарки; экстрактор при живой строке превращает <img>/background
+        // строки в data-URL (ВНУТРИ webview). __grabAvatar объявляется
+        // обёрткой в области видимости сериализованного экстрактора.
+        state.pinAvatars = state.pinAvatars || {}
         const out = await cand.executeJavaScript(
-          '(' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null }))) + ',' + JSON.stringify(allowScroll) + ')'
+          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id] }))) + ',' + JSON.stringify(allowScroll) + ') })()'
         )
         const r = JSON.parse(out)
         // TG: запоминаем сопоставление пин → числовой peer-id (после первого
@@ -1443,6 +1588,12 @@ async function pollUnread() {
     for (const r of (res.favs || [])) {
       const row = document.querySelector('.chat-row[data-pin="' + r.id + '"]')
       if (row) setRowBadge(row, r)
+      // аватарка чата, пойманная экстрактором → кэш и в строку (до
+      // следующего рестарта; монограмма-заглушка остаётся, если не поймали)
+      if (r.avatar && !state.pinAvatars[r.id]) {
+        state.pinAvatars[r.id] = r.avatar
+        if (row) setRowAvatar(row, r.avatar)
+      }
       if (r.mentions) mentions += r.mentions
       if (r.count) countSum += r.count
       if (r.unread) unreadChats++
@@ -1711,6 +1862,28 @@ function setRowBadge(row, r) {
   b.classList.toggle('mention', (r.mentions || 0) > 0)
 }
 
+// Аватарка чата в строке избранного: <img> из кэша экстрактора или
+// монограмма (первая буква названия, цвет — хэш названия). Появляется
+// в строке сразу, картинка подменяет монограмму, когда экстрактор
+// притащит data-URL из webview мессенджера.
+function setRowAvatar(row, dataUrl) {
+  const slot = row.querySelector('.row-avatar')
+  if (!slot) return
+  const p = state.cfg.pinned.find(x => x.id === row.dataset.pin)
+  if (!p) return
+  const av = dataUrl || (state.pinAvatars || {})[p.id]
+  if (av) {
+    if (slot.firstChild && slot.firstChild.tagName === 'IMG') slot.firstChild.src = av
+    else slot.innerHTML = '<img alt="">', slot.firstChild.src = av
+    slot.style.background = ''
+    slot.title = ''
+  } else {
+    slot.innerHTML = ''
+    slot.textContent = Array.from(String(p.title).trim() || '?')[0] || '?'
+    slot.style.background = badgeColor(p.title || '?')
+  }
+}
+
 /* ---------- код, исполняемый ВНУТРИ страниц мессенджеров ---------- */
 
 // Применение CSS-правил как inline-стилей: обходит CSP и специфичность SPA.
@@ -1759,7 +1932,7 @@ function __chatHubApplyCss(css) {
 // Mattermost: непрочитанные избранных каналов + ВСЕ личные сообщения.
 // li.unread = есть непрочитанное; в ЛИЧНЫХ чатах span.badge = число непрочитанных
 // сообщений (идёт в count), в каналах = число упоминаний (идёт в mentions).
-function __chatHubMmUnread(favs) {
+async function __chatHubMmUnread(favs) {
   const out = []
   let dmMentions = 0
   let dmUnread = false
@@ -1780,10 +1953,13 @@ function __chatHubMmUnread(favs) {
     let count = null
     let mentions = 0
     let found = false
+    let avatar = null
+    let rowLi = null
     if (slug) {
       const link = root.querySelector('a[href$="/' + kind + '/' + slug + '"]')
       const li = link ? link.closest('li') : null
       if (li) {
+        rowLi = li
         found = true
         if (li.classList.contains('unread')) unread = true
         const b = li.querySelector('.badge')
@@ -1797,7 +1973,8 @@ function __chatHubMmUnread(favs) {
         }
       }
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, found: found })
+    if (f.needAvatar && rowLi) avatar = await __grabAvatar(rowLi)
+    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, found: found, avatar: avatar })
   }
   return JSON.stringify({ favs: out, dmMentions: dmMentions, dmUnread: dmUnread })
 }
@@ -1847,7 +2024,8 @@ async function __chatHubTgUnread(favs, allowScroll) {
         unreadTxt: bd ? bd.textContent.trim() : '',
         mentions: mentions,
         unreadTitle: /unreadPeerTitle/.test(String(t.className)),
-        idx: idx
+        idx: idx,
+        el: r
       })
     })
     return list
@@ -1908,6 +2086,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
     let rank = 9999
     let time = null
     let found = false
+    let avatar = null
     if (row) {
       found = true
       rank = row.idx
@@ -1915,8 +2094,9 @@ async function __chatHubTgUnread(favs, allowScroll) {
       count = parseN(row.unreadTxt)
       mentions = row.mentions
       if (count > 0 || row.unreadTitle) unread = true
+      if (f.needAvatar) avatar = await __grabAvatar(row.el)
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale })
+    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar })
   }
   // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
   // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
@@ -1933,7 +2113,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
 // MAX: строка чата по названию (span.name — НЕ span.text, это текст последнего
 // сообщения), число в строке = непрочитанные (упоминаний не видно).
 // Позиция строки = активность: список MAX отсортирован по свежести.
-function __chatHubMaxUnread(favs) {
+async function __chatHubMaxUnread(favs) {
   const out = []
   const items = Array.from(document.querySelectorAll('aside div.item'))
   const nameOf = item => {
@@ -1945,6 +2125,7 @@ function __chatHubMaxUnread(favs) {
     let count = 0
     let rank = 9999
     let time = null
+    let avatar = null
     const idx = items.findIndex(item => nameOf(item) === String(f.title).trim())
     if (idx >= 0) {
       rank = idx
@@ -1955,8 +2136,9 @@ function __chatHubMaxUnread(favs) {
         const txt = (sp.textContent || '').trim()
         if (/^\d+$/.test(txt)) { count = parseInt(txt, 10); unread = true }
       }
+      if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time })
+    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
   // Маркеров упоминаний список MAX не показывает — только общее число.
@@ -1977,7 +2159,7 @@ function __chatHubMaxUnread(favs) {
 // Непрочитанные: контейнер .yamb-chat-list-item__badges — при непрочитанных
 // туда рендерится бейдж с числом (aria-labelledby строки ссылается на
 // элемент «<id>_unread», в DOM он появляется только с бейджем).
-function __chatHubYdxUnread(favs) {
+async function __chatHubYdxUnread(favs) {
   const out = []
   const items = Array.from(document.querySelectorAll('.yamb-chat-list-item'))
   const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
@@ -1986,6 +2168,7 @@ function __chatHubYdxUnread(favs) {
     let time = null
     let unread = false
     let count = 0
+    let avatar = null
     const ft = norm(f.title)
     const idx = items.findIndex(it => {
       const el = it.querySelector('.yamb-chat-list-item__name')
@@ -2005,8 +2188,9 @@ function __chatHubYdxUnread(favs) {
           else unread = true // нечисловой бейдж (точка/иконка «есть новое»)
         }
       }
+      if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time })
+    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку Телемоста — на вкладку.
   // Маркеров упоминаний список не показывает — только общее число.
@@ -2090,6 +2274,20 @@ function buildSettings(sec) {
       <h2>⚙ Настройки</h2>
       <p class="hint">Файл конфигурации: <code id="cfg-path"></code></p>
 
+      <h3>Вид</h3>
+      <div class="form-row">
+        <label style="flex:1"><input type="radio" name="layout" value="tabs"> Вкладки сверху</label>
+        <label style="flex:1"><input type="radio" name="layout" value="sidebar"> Панель слева (как в Ferdium)</label>
+      </div>
+      <p class="hint">Панель слева тянется за правый край: шире — значки с надписями,
+      уже — только большие значки мессенджеров. Переключение применяется сразу.</p>
+
+      <h3>Тема</h3>
+      <div class="form-row">
+        <label style="flex:1"><input type="radio" name="theme" value="dark"> Тёмная</label>
+        <label style="flex:1"><input type="radio" name="theme" value="light"> Светлая</label>
+      </div>
+
       <h3>Мессенджеры (вкладки)</h3>
       <div id="svc-rows"></div>
 
@@ -2140,6 +2338,29 @@ function buildSettings(sec) {
         if (el) el.textContent = 'v' + v
       }).catch(() => {})
     }
+
+    // вид: вкладки сверху / панель слева — применяется сразу, без перезапуска
+    document.querySelectorAll('input[name="layout"]').forEach(r => {
+      r.checked = (r.value === (state.cfg.layout || 'tabs'))
+      r.onchange = () => {
+        if (!r.checked) return
+        state.cfg.layout = r.value
+        applyLayout()
+        window.hub.saveConfig(state.cfg).catch(() => {})
+        toast(r.value === 'sidebar' ? 'Панель слева' : 'Вкладки сверху')
+      }
+    })
+    // тема: тёмная / светлая — тоже сразу
+    document.querySelectorAll('input[name="theme"]').forEach(r => {
+      r.checked = (r.value === (state.cfg.theme || 'dark'))
+      r.onchange = () => {
+        if (!r.checked) return
+        state.cfg.theme = r.value
+        applyTheme()
+        window.hub.saveConfig(state.cfg).catch(() => {})
+        toast(r.value === 'light' ? 'Светлая тема' : 'Тёмная тема')
+      }
+    })
 
     renderSvcRows()
   renderCssRows()

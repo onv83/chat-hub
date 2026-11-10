@@ -40,7 +40,7 @@ body {
   display: flex; align-items: center;
 }
 .tab:hover { color: var(--text); background: var(--panel); }
-.tab.active { color: #fff; background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
+.tab.active { color: var(--text); background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
 .tab .badge {
   display: none; margin-left: 7px; background: #da373c; color: #fff;
   border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 600;
@@ -164,6 +164,14 @@ body.split-dragging webview { pointer-events: none !important; }
 .svc-badge.svc-icon {
   padding: 2px; background: #fff; object-fit: contain; border-radius: 5px;
 }
+/* аватарка чата — сразу после иконки мессенджера (как в самих чатах):
+   круглая, картинка из webview или монограмма-заглушка */
+.row-avatar {
+  flex: 0 0 30px; height: 30px; width: 30px; border-radius: 50%;
+  overflow: hidden; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; color: #fff; user-select: none;
+}
+.row-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .chat-view { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .view-head {
   flex: 0 0 42px; display: flex; align-items: center; gap: 10px;
@@ -238,3 +246,78 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); }
   pointer-events: none; z-index: 99; max-width: 70vw;
 }
 #toast.show { opacity: 1; }
+
+/* ---------- ВИД: панель слева (как в Ferdium) ---------- */
+.tab-icon { display: none; }
+#sb-footer, #sb-resizer { display: none; }
+
+body.layout-sidebar { flex-direction: row; }
+body.layout-sidebar #tabbar {
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  border-bottom: none;
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+body.layout-sidebar .brand { padding: 12px 14px 10px; border-bottom: 1px solid var(--border); }
+body.layout-sidebar #tabs {
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto; overflow-x: hidden;
+  gap: 2px; padding: 6px;
+  scrollbar-width: thin; scrollbar-color: rgba(128,128,128,.35) transparent;
+}
+body.layout-sidebar #tabs::-webkit-scrollbar { width: 8px; }
+body.layout-sidebar #tabs::-webkit-scrollbar-thumb { background: rgba(128,128,128,.35); border-radius: 8px; }
+body.layout-sidebar .tab { padding: 8px 12px; border-radius: 8px; gap: 10px; }
+body.layout-sidebar .tab.active { box-shadow: inset 2px 0 0 var(--accent); }
+body.layout-sidebar .tab .badge { margin-left: auto; }
+body.layout-sidebar .tab-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: 0 0 30px;
+  border-radius: 8px; background: var(--panel);
+  color: var(--text); font-size: 15px; font-weight: 600; overflow: hidden;
+}
+body.layout-sidebar .tab-icon img { width: 18px; height: 18px; }
+body.layout-sidebar #sb-footer {
+  display: block; flex: 0 0 auto;
+  padding: 10px 14px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 12px; cursor: pointer; user-select: none;
+  white-space: nowrap; overflow: hidden;
+}
+body.layout-sidebar #sb-footer:hover { color: var(--text); }
+body.layout-sidebar #sb-resizer {
+  display: block; position: absolute; top: 0; right: -3px;
+  width: 6px; height: 100%; cursor: col-resize; z-index: 40;
+}
+body.layout-sidebar #sb-resizer:hover { background: rgba(88,101,242,.35); }
+body.sb-resizing { cursor: col-resize; user-select: none; }
+body.sb-resizing webview { pointer-events: none !important; }
+
+/* узкая панель — только большие значки */
+body.layout-sidebar.sb-rail #tabbar { width: 76px !important; }
+body.layout-sidebar.sb-rail .brand { padding: 10px 0; text-align: center; font-size: 12px; }
+body.layout-sidebar.sb-rail #tabs { padding: 8px 0; }
+body.layout-sidebar.sb-rail .tab { flex-direction: column; gap: 5px; padding: 9px 0; justify-content: center; }
+body.layout-sidebar.sb-rail .tab .tab-label { display: none; }
+body.layout-sidebar.sb-rail .tab .badge { position: absolute; top: 3px; right: 8px; margin: 0; }
+body.layout-sidebar.sb-rail .tab-icon { width: 44px; height: 44px; flex: 0 0 44px; font-size: 24px; border-radius: 12px; }
+body.layout-sidebar.sb-rail .tab-icon img { width: 26px; height: 26px; }
+body.layout-sidebar.sb-rail #sb-footer { display: none; }
+
+/* ---------- ТЕМА: светлая ---------- */
+body.theme-light {
+  --bg: #f2f3f5;
+  --panel: #ffffff;
+  --head: #e9eaec;
+  --text: #1e1f22;
+  --muted: #6b7075;
+  --border: #d4d6da;
+  --accent: #4752c4;
+}
+body.theme-light .tab.active { color: var(--text); }
+/* нативные контролы/скроллбары под тему (иначе в светлой теме
+   остаются тёмные системные скроллбары) */
+body { color-scheme: dark; }
+body.theme-light { color-scheme: light; }
