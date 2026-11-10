@@ -91,7 +91,7 @@ body.split-dragging webview { pointer-events: none !important; }
 .fav-menu-item .icon-btn { opacity: 0; }
 .fav-menu-item:hover .icon-btn { opacity: 1; }
 .fav-menu-empty { color: var(--muted); padding: 8px 10px; font-size: 13px; }
-.btn.pinned { border-color: var(--accent); color: #fff; background: rgba(88, 101, 242, .18); }
+.btn.pinned { border-color: var(--accent); color: var(--accent); background: rgba(88, 101, 242, .18); }
 .svc-webview { flex: 1; min-height: 0; width: 100%; background: #fff; }
 
 .btn {
@@ -156,7 +156,7 @@ body.split-dragging webview { pointer-events: none !important; }
 .chat-row:hover .icon-btn, .chat-row.selected .icon-btn { opacity: 1; pointer-events: auto; background: var(--bg); }
 /* при наведении счётчик уступает место кнопкам */
 .chat-row:hover .row-badge { opacity: 0; }
-.row-del { right: 6px; }
+.row-del { right: 6px; font-weight: 700; font-size: 14px; }
 .row-pin-btn { right: 34px; font-size: 13px; line-height: 1; }
 /* ручное закрепление 📌 (как в Telegram): закреплённый чат — полоса + подсвеченный пин */
 .chat-row.priority { box-shadow: inset 3px 0 0 var(--accent); }
