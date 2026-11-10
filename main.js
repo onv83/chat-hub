@@ -96,13 +96,34 @@ ipcMain.handle('config:save', (_e, cfg) => {
 })
 ipcMain.handle('config:path', () => CONFIG_PATH)
 ipcMain.handle('app:version', () => app.getVersion())
-// тема мессенджеров в webview: сайты в режиме «системная тема» смотрят
-// prefers-color-scheme, а он у Electron управляется nativeTheme.themeSource.
-// Ставим его по теме ПРИЛОЖЕНИЯ — тогда светлый ChatHub зажигает светлый
-// интерфейс во всех встроенных чатах (у кого тема не выставлена вручную)
+// тема мессенджеров в webview: нативный prefers-color-scheme до webview НЕ
+// доезжает (Electron не наследует его внутрь <webview>), поэтому подменяем
+// media query через CDP-эмуляцию ЖИВО, без перезагрузки страниц. Телемост
+// (theme_auto) и Telegram-webk следуют системной теме и перекрашиваются
+// мгновенно; MM держит тему в настройках аккаунта — его переключаем там
+function applyThemeToWC(wc, v) {
+  if (!wc || wc.isDestroyed() || wc.getType() !== 'webview') return
+  try {
+    if (!wc.debugger.isAttached()) wc.debugger.attach('1.3')
+    wc.debugger.sendCommand('Emulation.setEmulatedMedia', {
+      features: [{ name: 'prefers-color-scheme', value: v }]
+    })
+  } catch {}
+}
+function applyThemeToAllWebviews() {
+  const v = config.theme === 'light' ? 'light' : 'dark'
+  for (const wc of webContents.getAllWebContents()) applyThemeToWC(wc, v)
+}
+app.on('web-contents-created', (_e, wc) => {
+  // каждая новая webview (вкладка сервиса / пин) сразу получает тему
+  wc.once('dom-ready', () => applyThemeToWC(wc, config.theme === 'light' ? 'light' : 'dark'))
+})
 ipcMain.handle('theme:set-source', (_e, src) => {
-  nativeTheme.themeSource = src === 'light' ? 'light' : 'dark'
-  return nativeTheme.shouldUseDarkColors
+  if (src === 'light') config.theme = 'light'
+  else if (src === 'dark') config.theme = 'dark'
+  try { nativeTheme.themeSource = src === 'light' ? 'light' : 'dark' } catch {}
+  applyThemeToAllWebviews()
+  return true
 })
 // настоящий фокус ОКНА приложения: document.hasFocus() в рендерере врёт,
 // когда фокус уходит внутрь webview (клик в чат мессенджера), из-за чего
