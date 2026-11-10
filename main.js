@@ -11,7 +11,12 @@ app.commandLine.appendSwitch(
 
 // dev-копия: CHATHUB_DEV_DATA переносит userData (сессии, конфиг) в отдельную
 // папку, чтобы версия для разработки не делила состояние с рабочей
-if (process.env.CHATHUB_DEV_DATA) app.setPath('userData', process.env.CHATHUB_DEV_DATA)
+if (process.env.CHATHUB_DEV_DATA) {
+  app.setPath('userData', process.env.CHATHUB_DEV_DATA)
+  // отдельный AppUserModelID: иначе Windows склеивает окно dev-копии с
+  // ярлыком стабильной версии в панели задач (клик по ярлыку открывал DEV)
+  app.setAppUserModelId('ChatHub.Dev')
+}
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
