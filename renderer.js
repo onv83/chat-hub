@@ -577,9 +577,6 @@ function buildSection(id, deferSrc) {
     // Календарь/Заметки) — скрываем и в сервисной вкладке, и в пин-вьюхах
     // (в пин-вьюхах ещё и через columnCss — там лишняя полоса слева вдвойне мешает)
     if (svc.id === 'ydx') { try { wv.insertCSS('[class^="GlobalBarRoot"]{display:none !important}') } catch (e) {} }
-    // MAX: левый сайдбар (Все/Сферум/Каналы/Контакты/Звонки) — прячем и в
-    // основной вкладке; .app держит под него grid-колонку 77px — схлопываем
-    if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app{grid-template-columns:0 0 auto !important}') } catch (e) {} }
   })
 
   const menuBtn = bar.querySelector('.open-fav-menu')
