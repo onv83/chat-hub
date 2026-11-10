@@ -1094,6 +1094,9 @@ async function tgSearchResolve(favs) {
     // реагируют лишь на доверенные события; после прохода вернём папку)
     const prevFolder = await tgSelectFolder(wv, wcId, '0')
     for (const f of batch) {
+      // мгновенный стоп: пользователь вернулся в приложение — прекращаем
+      // проход немедленно (проход мог стартовать, пока окно было в фоне)
+      try { if (await window.hub.isWinFocused()) { lg('стоп: пользователь в приложении'); break } } catch {}
       let q = qOf(f.title)
       // Дубликаты названий (два аккаунта одного человека) title-матчинг не
       // разрешает: совпадают обе строки. Для пинов без pid ищем по @username

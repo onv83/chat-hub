@@ -104,7 +104,14 @@ async function dbg(wc) {
   if (!wc.debugger.isAttached()) wc.debugger.attach('1.3')
   return wc.debugger
 }
+// мгновенный стоп: пока окно приложения в фокусе, доверенный ввод ЗАПРЕЩЁН.
+// Проход индексации мог стартовать, пока окно было в фоне (пользователь печатал
+// в другом окне рядом), и продолжал печатать в поле с курсором, когда
+// пользователь вернулся. Блокируем на самом низком уровне — до любого ввода.
+const userAtApp = () => BrowserWindow.getAllWindows().some(w => w.isFocused())
+
 ipcMain.handle('input:click', async (_e, { wcId, x, y }) => {
+  if (userAtApp()) return 'blocked-focus'
   const wc = webContents.fromId(wcId)
   if (!wc) return false
   try {
@@ -115,6 +122,7 @@ ipcMain.handle('input:click', async (_e, { wcId, x, y }) => {
   } catch { return false }
 })
 ipcMain.handle('input:text', async (_e, { wcId, text }) => {
+  if (userAtApp()) return 'blocked-focus'
   const wc = webContents.fromId(wcId)
   if (!wc) return false
   try {
@@ -124,6 +132,7 @@ ipcMain.handle('input:text', async (_e, { wcId, text }) => {
   } catch { return false }
 })
 ipcMain.handle('input:key', async (_e, { wcId, key, keyCode, modifiers }) => {
+  if (userAtApp()) return 'blocked-focus'
   const wc = webContents.fromId(wcId)
   if (!wc) return false
   try {
@@ -140,6 +149,7 @@ ipcMain.handle('input:key', async (_e, { wcId, key, keyCode, modifiers }) => {
 // виртуализированный список рендерит только видимое окно, прокрутка грузит
 // следующие партии диалогов с их временами последних сообщений
 ipcMain.handle('input:wheel', async (_e, { wcId, x, y, deltaY }) => {
+  if (userAtApp()) return 'blocked-focus'
   const wc = webContents.fromId(wcId)
   if (!wc) return false
   try {
@@ -148,6 +158,27 @@ ipcMain.handle('input:wheel', async (_e, { wcId, x, y, deltaY }) => {
     return true
   } catch { return false }
 })
+
+// диагностика самопроизвольного окна Телемоста: логируем КАЖДОЕ новое окно и
+// webContents с URL (Kimi 3.1: setWindowOpenHandler вешается на конкретный
+// webContents и не ловит окна из пересозданных гостей/попапов/других путей;
+// глобальные события app ловят всё). Лог: userData/window-diag.log
+{
+  const DIAG_LOG = path.join(app.getPath('userData'), 'window-diag.log')
+  const diag = line => { try { fs.appendFileSync(DIAG_LOG, new Date().toISOString() + ' ' + line + '\n') } catch {} }
+  app.on('web-contents-created', (_e, contents) => {
+    try {
+      diag('web-contents-created type=' + contents.getType() + ' url=' + (contents.getURL() || '(пусто)'))
+      contents.on('did-navigate', () => { try { diag('navigate type=' + contents.getType() + ' → ' + contents.getURL()) } catch {} })
+    } catch {}
+  })
+  app.on('browser-window-created', (_e, win) => {
+    try {
+      diag('browser-window-created id=' + win.id + ' url=' + ((win.webContents && win.webContents.getURL()) || '(пусто)'))
+      if (win.webContents) win.webContents.once('did-navigate', () => { try { diag('window id=' + win.id + ' navigate → ' + win.webContents.getURL()) } catch {} })
+    } catch {}
+  })
+}
 
 function createWindow() {
   // webk (Telegram) прячет список диалогов при viewport < ~1320px, поэтому
