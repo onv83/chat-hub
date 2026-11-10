@@ -648,7 +648,7 @@ async function pinCurrentChat(svc) {
     mm: /\/(channels|messages|pl)\//,
     tg: /#/,
     max: /\/-\d+/,
-    ydx: /\/chats\//
+    ydx: /\/(chats|user)\//
   }
   const chatRe = CHAT_URL_RE[svc.id]
   if (chatRe && !chatRe.test(url)) {
@@ -1488,13 +1488,14 @@ async function tgSearchResolve(favs) {
     // папку «All».
     try {
       const supH = '(() => { const sup = document.querySelector(".search-super"); return sup ? Math.round(sup.getBoundingClientRect().height) : -1 })()'
+      const wid = wv.getWebContentsId()
       for (let k = 0; k < 4; k++) {
         const h = await evT(wv, supH, 8000)
         if (h <= 0) break
-        await window.hub.trustedKey(wcId, 'Escape', 27)
+        await window.hub.trustedKey(wid, 'Escape', 27)
         await new Promise(r => setTimeout(r, 500))
       }
-      await tgSelectFolder(wv, wcId, '0')
+      await tgSelectFolder(wv, wid, '0')
     } catch {}
     try { if (prevFolder && prevFolder !== '0') await tgSelectFolder(wv, wv.getWebContentsId(), prevFolder) } catch {}
     try { if (prevFocus && prevFocus.focus) prevFocus.focus() } catch {}
