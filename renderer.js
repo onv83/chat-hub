@@ -237,6 +237,10 @@ function buildTabs() {
     const badge = document.createElement('span')
     badge.className = 'badge'
     b.appendChild(badge)
+    // второй чип — «@упоминания лично тебя» (пока только MM, из API)
+    const mbadge = document.createElement('span')
+    mbadge.className = 'badge badge-m'
+    b.appendChild(mbadge)
   }
   mk('settings', '⚙ Настройки')
 }
@@ -386,6 +390,25 @@ function updateBadge(svcId, text, mention) {
   b.textContent = text
   b.classList.toggle('on', !!text)
   b.classList.toggle('mention', !!mention)
+  // второй чип (@упоминания) — только MM пишет; прочие сервисы чистят
+  const m = b.parentElement && b.parentElement.querySelector('.badge.badge-m')
+  if (m) { m.textContent = ''; m.classList.remove('on') }
+}
+
+// п.20: два счётчика на вкладке MM — всего непрочитанных сообщений (красный)
+// и упоминаний пользователя лично (яркий @-чип: личные чаты + @-упоминания).
+// Числа канонические, из API MM /users/me/teams/unread — сайдбар каналов
+// показывает только упоминания, «всего» из него не получить.
+function updateBadgeMM(total, mentions) {
+  const b = document.querySelector('.tab[data-tab="svc:mm"] .badge')
+  const m = b && b.parentElement && b.parentElement.querySelector('.badge.badge-m')
+  if (!b || !m) return
+  b.textContent = total > 0 ? String(total) : ''
+  b.classList.toggle('on', total > 0)
+  b.classList.remove('mention')
+  m.textContent = mentions > 0 ? '@' + mentions : ''
+  m.classList.toggle('on', mentions > 0)
+  m.classList.add('mention')
 }
 
 /* ---------- избранное ---------- */
@@ -1304,6 +1327,7 @@ async function pollUnread() {
     const ext = UNREAD_EXTRACTORS[svc.id]
     const wv = svcViewFor(svc.id)
     // Mattermost: в сайдбаре времён нет — время последнего сообщения берём из API MM
+    if (svc.id === 'mm') mmTabCounts().catch(() => {})
     if (svc.id === 'mm' && favs.length) mmLastPosts().catch(() => {})
     if (!ext || !favs.length || !wv) continue
     let res = null
@@ -1401,7 +1425,10 @@ async function pollUnread() {
       }
       state.prevUnread[r.id] = total
     }
-    if (mentions > 0) updateBadge(svc.id, '@' + mentions, true)
+    if (svc.id === 'mm') {
+      // бейдж вкладки MM — из API (mmTabCounts): два чипа «всего/@упоминаний»;
+      // сайдбарные суммы здесь не трогаем (rows уже обновлены выше)
+    } else if (mentions > 0) updateBadge(svc.id, '@' + mentions, true)
     else if (countSum > 0) updateBadge(svc.id, String(countSum), false)
     else if (unreadChats > 0) updateBadge(svc.id, String(unreadChats), false)
     else updateBadge(svc.id, '', false)
@@ -1507,6 +1534,29 @@ function fmtChatWhen(ms, dayOnly) {
 // Каналы: name = slug; личные: name = «userA__userB» — матчуем по user id
 // собеседника (username -> id через /api/v4/users/username/, кэшируется).
 // Обновляемся не чаще раза в 30 с.
+// п.20: два счётчика вкладки MM из API — всего непрочитанных (msg_count,
+// все команды) и упоминаний пользователя (mention_count: личные + @-упоминания).
+// Троттлинг 30 с; сбой молчит (бейдж остаётся прежним).
+async function mmTabCounts() {
+  const now = Date.now()
+  if (state.mmTabCountsAt && now - state.mmTabCountsAt < 30000) return
+  const wv = svcViewFor('mm')
+  if (!wv || !wv.executeJavaScript) return
+  try {
+    const out = await wv.executeJavaScript('(async () => { try {' +
+      ' const r = await fetch("/api/v4/users/me/teams/unread", { headers: { "X-Requested-With": "XMLHttpRequest" } }).then(x => x.json());' +
+      ' if (!Array.isArray(r) || !r.length) return "";' +
+      ' let t = 0, m = 0;' +
+      ' for (const u of r) { t += Number(u.msg_count) || 0; m += Number(u.mention_count) || 0 }' +
+      ' return JSON.stringify({ t, m });' +
+      ' } catch (e) { return "" } })()')
+    if (!out) return
+    state.mmTabCountsAt = now
+    const c = JSON.parse(out)
+    if (typeof c.t === 'number') updateBadgeMM(c.t, c.m)
+  } catch {}
+}
+
 async function mmLastPosts() {
   const now = Date.now()
   if (state.mmChannelsAt && now - state.mmChannelsAt < 30000) return

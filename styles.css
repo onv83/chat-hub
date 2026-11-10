@@ -47,6 +47,7 @@ body {
 }
 .tab .badge.on { display: inline-block; }
 .tab .badge.mention { background: #ff453a; font-weight: 800; box-shadow: 0 0 7px rgba(255,69,58,.55); }
+.tab .badge + .badge { margin-left: 4px; }
 
 #content { flex: 1; position: relative; min-height: 0; }
 /* вкладки через opacity, а не display:none и НЕ visibility:hidden:
