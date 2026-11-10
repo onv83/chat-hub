@@ -20,7 +20,7 @@ if (process.env.CHATHUB_DEV_DATA) {
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
-  cssDefaultsVersion: 2,
+  cssDefaultsVersion: 3,
   services: [
     { id: 'mm',  name: 'Mattermost',             url: 'https://im.astralinux.ru',    partition: 'persist:mm' },
     { id: 'tg',  name: 'Telegram',               url: 'https://web.telegram.org/k/', partition: 'persist:tg', proxy: 'http://127.0.0.1:18888' },
@@ -30,7 +30,8 @@ const DEFAULT_CONFIG = {
   // CSS применяется ТОЛЬКО к колонкам сборной вкладки (прячем боковые панели),
   // вкладки самих мессенджеров не трогаем.
   columnCss: {
-    mm: '#SidebarContainer,#sidebar-left,#sidebar-right,.sidebar--left,.sidebar--right{display:none!important}',
+    // Правая панель Mattermost содержит тред (RHS); прячем только навигацию слева.
+    mm: '#SidebarContainer,#sidebar-left,.sidebar--left{display:none!important}',
     tg: '.sidebar,.right-column{display:none!important}',
     max: '.app>aside{display:none!important}.app>main{width:100%!important}',
     ydx: '.yamb-root__layout>.ui-layout_direction_column,.yamb-sidebar{display:none!important}'
