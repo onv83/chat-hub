@@ -1348,6 +1348,8 @@ function tgPidSafe(pin, pid, rowTitle) {
 }
 
 async function pollUnread() {
+  let favSumT = 0  // Сборная (ТОЛЬКО избранное): всего непрочитанных
+  let favSumM = 0  // Сборная: @упоминания в избранных чатах
   for (const svc of state.cfg.services) {
     const favs = favoritesOf(svc.id)
     const ext = UNREAD_EXTRACTORS[svc.id]
@@ -1428,6 +1430,10 @@ async function pollUnread() {
       if (r.mentions) mentions += r.mentions
       if (r.count) countSum += r.count
       if (r.unread) unreadChats++
+      // Сборная — только избранное: всего непрочитанных + упоминания;
+      // «точка без числа» (unread без count/mentions) считаем как 1
+      favSumT += (r.count || 0) + (r.unread && !(r.count > 0) && !(r.mentions > 0) ? 1 : 0)
+      favSumM += r.mentions || 0
       // активность для сортировки: позиция строки в списке мессенджера
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
@@ -1466,14 +1472,10 @@ async function pollUnread() {
     else if (unreadChats > 0) updateBadge(svc.id, String(unreadChats), false)
     else updateBadge(svc.id, '', false)
   }
-  // п.20: два чипа на «★ Сборной» — суммы по ВСЕМ мессенджерам (не только
-  // избранное): всего непрочитанных + упоминаний лично; берём уже собранные
-  // счётчики вкладок (state.svcTabTotals: MM — API, прочие — экстракторы)
-  state.svcTabTotals = state.svcTabTotals || {}
-  let combT = 0
-  let combM = 0
-  for (const v of Object.values(state.svcTabTotals)) { combT += v.t || 0; combM += v.m || 0 }
-  updateBadge2('combined', combT, combM)
+  // п.20b: «★ Сборная» считает ТОЛЬКО избранное (требование пользователя),
+  // не все чаты мессенджеров: всего непрочитанных в избранных чатах
+  // + @упоминания в них; вкладки самих мессенджеров остаются по всему списку
+  updateBadge2('combined', favSumT, favSumM)
   // время последнего сообщения в строках: «Мессенджер · 17:30»
   // (в т.ч. MM — из API; полный текст времени — в подсказке)
   for (const p of state.cfg.pinned) {
