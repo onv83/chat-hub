@@ -441,6 +441,17 @@ async function pinCurrentChat(svc) {
   if (!url || url === 'about:blank') { toast('Чат ещё не открыт'); return }
   // webk иногда живёт на URL без хеша (открыт список чатов) — закреплять нечего
   if (svc.id === 'tg' && !/#.+/.test(url)) { toast('Сначала откройте чат в Telegram'); return }
+  // защита от закрепления «списка чатов» (корня мессенджера): пин без
+  // конкретного чата — мусор с ничего не значащим именем («Чат» у MAX).
+  // Корень распознаём по отсутствию маркера чата в URL сервиса.
+  const CHAT_URL_RE = {
+    mm: /\/(channels|messages|pl)\//,
+    tg: /#/,
+    max: /\/-\d+/,
+    ydx: /\/chats\//
+  }
+  const chatRe = CHAT_URL_RE[svc.id]
+  if (chatRe && !chatRe.test(url)) { toast('Сначала откройте конкретный чат, а не список'); return }
   const title = (await getChatNameFor(svc.id, wv, url)) || 'Чат'
   const key = pinKeyOf(svc.id, url, title)
   if (state.cfg.pinned.some(p => (p.key || (p.serviceId + '|' + p.url)) === key)) { toast('Этот чат уже в избранном'); return }
@@ -1362,12 +1373,17 @@ async function pollUnread() {
     // при пустом favs просто не обновятся
     if (!ext || !wv) continue
     let res = null
-    // кандидатные вьюхи: вкладка мессенджера + живые вьюхи пинов этого сервиса.
-    // У TG сервисная вкладка иногда остаётся на пустом/авторизационном экране,
-    // а вьюха любого чата того же сервиса видит весь список диалогов — берём
-    // первый вариант, который вернул полезные данные.
+    // кандидатные вьюхи: вкладка мессенджера ПЕРВОЙ — у неё полный живой
+    // список и бейджи обновляются в реальном времени. Пин-вьюха (открытый
+    // чат Сборной) показывает укороченный список и в скрытом состоянии
+    // обновляется с задержкой — если опрашивать её первой, непрочитанные
+    // всплывают с опозданием (баг «чат поднялся наверх, а бейджа нет»).
+    // Фолбэк на пин-вьюхи остаётся: у TG сервисная вкладка иногда висит
+    // на пустом/авторизационном экране (скелет) — берём первый вариант,
+    // который вернул полезные данные.
     const candidates = []
-    if (wv) candidates.push(wv)
+    if (state.svcViews[svc.id]) candidates.push(state.svcViews[svc.id])
+    if (wv && candidates.indexOf(wv) < 0) candidates.push(wv)
     for (const [pvId, pvView] of Object.entries(state.pinViews)) {
       const pvPin = state.cfg.pinned.find(x => x.id === pvId)
       if (pvPin && pvPin.serviceId === svc.id && candidates.indexOf(pvView) < 0) candidates.push(pvView)
