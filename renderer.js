@@ -1935,11 +1935,13 @@ function __chatHubMaxUnread(favs) {
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
   // Маркеров упоминаний список MAX не показывает — только общее число.
+  // Только короткие числа (1-4 цифры): в открытых чатах в спанах всплывают
+  // id-числа (12+ цифр) — это не счётчики, их не суммируем.
   let svcTotal = 0
   for (const it of items) {
     for (const sp of it.querySelectorAll('span')) {
       const txt = (sp.textContent || '').trim()
-      if (/^\d+$/.test(txt)) svcTotal += parseInt(txt, 10)
+      if (/^\d{1,4}$/.test(txt)) svcTotal += parseInt(txt, 10)
     }
   }
   return JSON.stringify({ favs: out, svcTotals: { total: svcTotal, mentions: 0 } })
