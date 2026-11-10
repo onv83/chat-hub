@@ -571,7 +571,13 @@ function buildSection(id, deferSrc) {
     updateBadge(svc.id, m ? m[1] : '', false)
   })
   // фирменная иконка мессенджера — из favicon его же страницы
-  wv.addEventListener('dom-ready', () => captureSvcIcon(svc.id, wv))
+  wv.addEventListener('dom-ready', () => {
+    captureSvcIcon(svc.id, wv)
+    // Телемост: панель сервисов Яндекса (Алиса Про/Почта/Диск/Документы/
+    // Календарь/Заметки) — скрываем и в сервисной вкладке, и в пин-вьюхах
+    // (в пин-вьюхах ещё и через columnCss — там лишняя полоса слева вдвойне мешает)
+    if (svc.id === 'ydx') { try { wv.insertCSS('[class^="GlobalBarContainer"]{display:none !important}') } catch (e) {} }
+  })
 
   const menuBtn = bar.querySelector('.open-fav-menu')
   menuBtn.onclick = (e) => {
