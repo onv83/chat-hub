@@ -197,7 +197,15 @@ body.split-dragging webview { pointer-events: none !important; }
 .hidden { display: none !important; }
 
 /* ---------- настройки ---------- */
-.settings { flex: 1; overflow-y: auto; padding: 22px 28px 60px; max-width: 980px; }
+/* настройки: на всю ширину окна + современная прокрутка (как у списка чатов, п.14) */
+.settings { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 22px 32px 60px; scroll-behavior: smooth; overscroll-behavior: contain; }
+.settings { scrollbar-width: thin; scrollbar-color: rgba(128,128,128,.35) transparent; }
+.settings::-webkit-scrollbar { width: 8px; }
+.settings::-webkit-scrollbar-track { background: transparent; }
+.settings::-webkit-scrollbar-thumb { background: rgba(128,128,128,.35); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+.settings:hover::-webkit-scrollbar-thumb { background: rgba(128,128,128,.6); background-clip: content-box; }
+.settings::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.85); background-clip: content-box; }
+.settings:not(:hover)::-webkit-scrollbar-thumb { background: transparent; }
 .settings h2 { margin: 0 0 4px; }
 .settings h3 { margin: 26px 0 8px; color: var(--text); }
 .hint { color: var(--muted); font-size: 12.5px; }
