@@ -21,6 +21,7 @@ const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
   cssDefaultsVersion: 3,
+  tabIcons: false,
   services: [
     { id: 'mm',  name: 'Mattermost',             url: 'https://im.astralinux.ru',    partition: 'persist:mm' },
     { id: 'tg',  name: 'Telegram',               url: 'https://web.telegram.org/k/', partition: 'persist:tg', proxy: 'http://127.0.0.1:18888' },
@@ -37,6 +38,7 @@ const DEFAULT_CONFIG = {
     ydx: '.yamb-root__layout>.ui-layout_direction_column,.yamb-sidebar{display:none!important}'
   },
   zoom: { mm: 1, tg: 1, max: 1, ydx: 1 },
+  favBadgeAlways: false,
   pinned: []
 }
 
