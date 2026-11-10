@@ -1471,6 +1471,21 @@ async function tgSearchResolve(favs) {
     }
   } catch (e) { lg('проход ошибка: ' + (e && e.message)) } finally {
     tgSearchBusy = false
+    // ВАЖНО: вернуть чат-лист в рабочее состояние. webk с открытым поиском
+    // (даже с пустым полем) показывает архив/недавние вместо основного
+    // списка — экстрактор следующего цикла не находит строки (found=0).
+    // Закрываем поиск Escape'ами до исчезновения .search-super и включаем
+    // папку «All».
+    try {
+      const supH = '(() => { const sup = document.querySelector(".search-super"); return sup ? Math.round(sup.getBoundingClientRect().height) : -1 })()'
+      for (let k = 0; k < 4; k++) {
+        const h = await evT(wv, supH, 8000)
+        if (h <= 0) break
+        await window.hub.trustedKey(wcId, 'Escape', 27)
+        await new Promise(r => setTimeout(r, 500))
+      }
+      await tgSelectFolder(wv, wcId, '0')
+    } catch {}
     try { if (prevFolder && prevFolder !== '0') await tgSelectFolder(wv, wv.getWebContentsId(), prevFolder) } catch {}
     try { if (prevFocus && prevFocus.focus) prevFocus.focus() } catch {}
   }
@@ -2096,6 +2111,35 @@ async function __chatHubTgUnread(favs, allowScroll) {
   }
   const seen = new Map()
   collect().forEach(x => { if (!seen.has(x.pid)) seen.set(x.pid, x) })
+  // Аватарный свип: webk виртуализирует список — в DOM только видимые
+  // строки, аватарки нижних чатов («Агасиев» и др.) добираются только
+  // прокруткой. Раз в 45 с, пока есть избранные без аватарки, проходим
+  // список шагами (+600 px, scroll-событие, пауза на перерисовку — как
+  // tgScrollLoad) и собираем строки в общий пул. Прокрутка невидима:
+  // свип идёт только когда вкладка сервиса не на экране (allowScroll).
+  if (allowScroll && favs.some(f => f.needAvatar) &&
+      Date.now() - (window.__hubAvSweepAt || 0) > 45000) {
+    window.__hubAvSweepAt = Date.now()
+    const scr = () => {
+      const cs = Array.from(document.querySelectorAll('.chatlist-parts'))
+        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50 })
+      return cs[0] || null
+    }
+    const sup = document.querySelector('.search-super')
+    if (!sup && scr()) {
+      for (let step = 0; step < 40; step++) {
+        const c = scr()
+        if (!c) break
+        const before = c.scrollTop
+        c.scrollTop = Math.min(c.scrollTop + 600, c.scrollHeight)
+        c.dispatchEvent(new Event('scroll', { bubbles: true }))
+        await sleep(350)
+        collect().forEach(x => { if (!seen.has(x.pid)) seen.set(x.pid, x) })
+        if (c.scrollTop === before) break // дно списка
+      }
+      try { const c = scr(); if (c) c.scrollTop = 0 } catch (e) {}
+    }
+  }
   const rows = Array.from(seen.values())
   const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
   const out = []
