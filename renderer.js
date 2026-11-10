@@ -1025,11 +1025,15 @@ async function tgSelectFolder(wv, wcId, folderId) {
   } catch { return null }
 }
 async function tgSearchResolve(favs) {
-  // Проходы печатают в поле поиска TG и скроллят список диалогов. Пока окно
-  // приложения В ФОКУСЕ — не трогаем мессенджер вообще: пользователь может
-  // прямо сейчас смотреть на вкладку Telegram (детектор «простоя» по вводу
-  // этого не ловил — чтение без кликов выглядело как простой). Проходы
-  // догонят, когда приложение свернуто или в фоне.
+  // Проходы печатают в поле поиска TG и скроллят список диалогов — пока окно
+  // приложения АКТИВНО, мессенджер не трогаем вообще. document.hasFocus() ВРЁТ:
+  // когда пользователь кликнул в чат внутри webview, хост-документ считает
+  // фокус потерянным и проход начинал печатать прямо на глазах. Спрашиваем
+  // настоящий фокус окна у main-процессса; при любой ошибке считаем, что
+  // пользователь здесь, и ничего не делаем. Тумблер в ⚙ Настройках выключает
+  // фоновую индексацию полностью.
+  if (state.cfg.tgBackgroundIndex === false) return null
+  try { if (await window.hub.isWinFocused()) return null } catch { return null }
   if (document.hasFocus()) return null
   if (tgSearchBusy || Date.now() - tgSearchAt < 20000) return null
   const pane = document.querySelector('section[data-tab="svc:tg"]')
@@ -1951,6 +1955,14 @@ function buildSettings(sec) {
         <input type="range" id="live-views" min="2" max="20" step="1" style="flex:1">
       </div>
 
+      <h3>Индексация Telegram</h3>
+      <p class="hint">Обновление «времени последнего сообщения» у пинов Telegram:
+      приложение ищет чаты и читает список диалогов ТОЛЬКО когда окно свёрнуто
+      или неактивно. Активное окно никогда не трогается. Если мешает — выключите.</p>
+      <div class="form-row">
+        <label style="flex:1"><input type="checkbox" id="tg-bg-index"> Фоновая индексация Telegram</label>
+      </div>
+
       <h3>Избранное</h3>
       <div id="pin-rows"></div>
 
@@ -1985,6 +1997,17 @@ function buildSettings(sec) {
       await window.hub.saveConfig(state.cfg)
       trimPinViews(state.cfg.selectedPinId)
       renderChatList()
+    }
+  }
+
+  // тумблер «фоновая индексация Telegram» — применяется сразу, без перезапуска
+  const tgBg = document.getElementById('tg-bg-index')
+  if (tgBg) {
+    tgBg.checked = state.cfg.tgBackgroundIndex !== false
+    tgBg.onchange = async () => {
+      state.cfg.tgBackgroundIndex = tgBg.checked
+      await window.hub.saveConfig(state.cfg)
+      toast(tgBg.checked ? 'Фоновая индексация включена' : 'Фоновая индексация Telegram выключена')
     }
   }
 
