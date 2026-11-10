@@ -448,39 +448,43 @@ function ensureSbChrome(bar) {
 
 // применить тему (тёмная по умолчанию / светлая)
 /* MM (Mattermost) тему в настройках аккаунта держит сам и prefers-color-scheme
-   не слушает: красим его через localStorage['theme'] (резолвнутая тема MM).
-   При светлой теме ChatHub подменяем набор цветов на светлый и перезагружаем
-   MM-вьюхи; исходная тёмная сохраняется в __hubMmThemeBackup для отката. */
-const MM_LIGHT_THEME = {
-  mainBg: '255, 255, 255', mainFg: '49, 50, 52',
-  buttonBg: '74, 124, 232', buttonFg: '255, 255, 255',
-  sidebarBg: '242, 244, 247', sidebarFg: '49, 50, 52',
-  sidebarTextActiveBorder: '74, 124, 232', sidebarWhiteLogo: 'false',
-  link: '56, 111, 229', linkVisited: '#551a8b',
-  propDefault: '#fff', propGray: '#EDEDED', propBrown: '#F7DDC3', propOrange: '#ffd3c1',
-  propYellow: '#f7f0b6', propGreen: '#c7eac3', propBlue: '#B1D1F6', propPurple: '#e6d0ff',
-  propPink: '#ffd6e9', propRed: '#ffa9a9'
+   не слушает. Но его тема — 107 CSS-переменных ИНЛАЙН на <html>:
+   documentElement.style.setProperty перебивает их (инлайн = высший приоритет),
+   MM не затирает. Светлая тема ChatHub → подменяем ключевые переменные,
+   тёмная → снимаем наши (возвращаются исходные). Работает живо, без reload. */
+const MM_LIGHT_VARS = {
+  '--center-channel-bg-rgb': '255, 255, 255', '--center-channel-bg': '#ffffff',
+  '--center-channel-color-rgb': '49, 50, 52', '--center-channel-color': '#313234',
+  '--sidebar-bg-rgb': '242, 244, 247', '--sidebar-bg': '#f2f4f7',
+  '--sidebar-text-rgb': '49, 50, 52', '--sidebar-text': '#313234',
+  '--sidebar-header-bg-rgb': '247, 248, 250', '--sidebar-teambar-bg-rgb': '247, 248, 250',
+  '--sidebar-header-text-color-rgb': '49, 50, 52', '--sidebar-unread-text-rgb': '49, 50, 52',
+  '--sidebar-text-active-color-rgb': '49, 50, 52', '--sidebar-text-hover-bg-rgb': '232, 235, 240',
+  '--sidebar-text-active-border-rgb': '74, 124, 232',
+  '--link-color-rgb': '33, 82, 196',
+  '--mention-bg-rgb': '255, 246, 214', '--mention-color-rgb': '49, 50, 52',
+  '--mention-highlight-bg-rgb': '255, 246, 214', '--mention-highlight-link-rgb': '33, 82, 196',
+  '--own-highlight-bg-rgb': '235, 244, 255',
+  '--pinned-highlight-bg-mixed-rgb': '232, 240, 252',
+  '--new-message-separator-rgb': '74, 124, 232'
+}
+
+const mmThemeExpr = (light) => {
+  const sets = Object.entries(MM_LIGHT_VARS).map(([k, v]) =>
+    'document.documentElement.style.setProperty(' + JSON.stringify(k) + ', ' + JSON.stringify(v) + ')').join('; ')
+  const removes = Object.keys(MM_LIGHT_VARS).map(k =>
+    'document.documentElement.style.removeProperty(' + JSON.stringify(k) + ')').join('; ')
+  return '(function(){try{' + (light ? sets : removes) + ';return "ok"}catch(e){return String(e)}})()'
 }
 
 async function applyMmTheme(theme) {
-  const light = theme === 'light'
   const views = [state.svcViews['mm']]
   for (const [pid, wv] of Object.entries(state.pinViews || {})) {
     const pin = (state.cfg.pinned || []).find(p => p.id === pid)
     if (pin && pin.serviceId === 'mm' && wv) views.push(wv)
   }
   for (const wv of views.filter(Boolean)) {
-    try {
-      await wv.executeJavaScript('(function(){\n' +
-        '  try {\n' +
-        '    if (!localStorage.getItem("__hubMmThemeBackup")) localStorage.setItem("__hubMmThemeBackup", localStorage.getItem("theme") || "")\n' +
-        (light
-          ? '    localStorage.setItem("theme", ' + JSON.stringify(JSON.stringify(MM_LIGHT_THEME)) + ')\n'
-          : '    const b = localStorage.getItem("__hubMmThemeBackup"); if (b) localStorage.setItem("theme", b)\n') +
-        '  } catch (e) {}\n' +
-        '})()')
-      wv.reload()
-    } catch (e) {}
+    try { await wv.executeJavaScript(mmThemeExpr(theme === 'light')) } catch (e) {}
   }
 }
 
@@ -621,6 +625,8 @@ function buildSection(id, deferSrc) {
     // прячем navigation и сдвигаем .app влево на ширину колонки — пустота
     // уезжает за левый край, все родные сетки остаются как есть
     if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app{margin-left:-77px !important; width:calc(100% + 77px) !important; max-width:none !important}') } catch (e) {} }
+    // MM: если выбрана светлая тема — красим вьюху и при её (пере)загрузке
+    if (svc.id === 'mm' && state.cfg.theme === 'light') { try { wv.executeJavaScript(mmThemeExpr(true)).catch(() => {}) } catch (e) {} }
   })
 
   const menuBtn = bar.querySelector('.open-fav-menu')
