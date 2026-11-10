@@ -52,27 +52,88 @@ function __chatHubGrabAvatar(el) {
   return (async () => {
     try {
       if (!el) return null
-      let src = ''
-      const img = el.querySelector('img')
-      if (img && img.src && (img.naturalWidth === 0 || img.naturalWidth > 8)) src = img.src
-      if (!src) {
-        const bgEl = el.querySelector('[style*="background-image"]') ||
-          el.querySelector('.dialog-avatar, .UserPic, .Orb-UserPic, .avatar, [class*="avatar"]')
-        if (bgEl) {
-          const m = String(getComputedStyle(bgEl).backgroundImage || '').match(/url\(["']?(.+?)["']?\)/)
-          if (m && m[1] && m[1] !== 'none') src = m[1]
+      // 1) Телемост: у чатов без фото аватар — монограмма (буквы на цветном
+      //    кругу). Собираем её в SVG data-URL — выглядит как в самом Телемосте.
+      const mono = el.querySelector('.Orb-UserPic-Monogram, [class*="onogram"]')
+      if (mono) {
+        const color = getComputedStyle(mono).backgroundColor
+        const text = (mono.textContent || '').trim()
+        if (color && color !== 'rgba(0, 0, 0, 0)' && text) {
+          const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+          const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72"><rect width="72" height="72" rx="36" fill="' + esc(color) + '"/><text x="36" y="47" font-family="sans-serif" font-size="26" font-weight="600" fill="#fff" text-anchor="middle">' + esc(text.slice(0, 2)) + '</text></svg>'
+          return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
         }
       }
-      if (!src) return null
-      if (src.startsWith('data:')) return src
-      const blob = await fetch(src).then(r => r.blob()).catch(() => null)
-      if (!blob || !blob.size || blob.size > 300000) return null
-      return await new Promise(res => {
-        const fr = new FileReader()
-        fr.onload = () => res(fr.result)
-        fr.onerror = () => res(null)
-        fr.readAsDataURL(blob)
-      })
+      // 1b) Telegram: аватар чата без фото — div.dialog-avatar с
+      //     linear-gradient и буквами ПРЯМО в тексте узла («О», «Пм»).
+      //     Собираем SVG: круг цветом первого стопа градиента + буквы.
+      const tgAv = el.querySelector('.dialog-avatar')
+      if (tgAv && !tgAv.querySelector('img')) {
+        const bg = getComputedStyle(tgAv).backgroundImage || ''
+        const cm = bg.match(/rgba?\([^)]+\)/)
+        const ct = (tgAv.textContent || '').trim()
+        if (cm && ct) {
+          const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+          const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + esc(cm[1]) + '"/></linearGradient></defs><rect width="72" height="72" rx="36" fill="url(#g)"/><text x="36" y="47" font-family="sans-serif" font-size="26" font-weight="600" fill="#fff" text-anchor="middle">' + esc(ct.slice(0, 2)) + '</text></svg>'
+          return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+        }
+      }
+      // 2) картинка строки: ищем аватарный <img> (не первую попавшуюся
+      //    иконку-эмодзи) — классы аватаров мессенджеров или первый img
+      //    достаточно крупный
+      const imgs = Array.from(el.querySelectorAll('img'))
+      let img = imgs.find(i => /avatar|photo|userpic/i.test(String(i.className))) || imgs.find(i => i.naturalWidth >= 24)
+      if (!img || !img.src) {
+        const bgEl = el.querySelector('.dialog-avatar, .UserPic, .Orb-UserPic, .avatar, [class*="avatar"]')
+        if (bgEl) {
+          const m = String(getComputedStyle(bgEl).backgroundImage || '').match(/url\(["']?(.+?)["']?\)/)
+          if (m && m[1] && m[1] !== 'none' && m[1].startsWith('data:')) return m[1]
+        }
+        return null
+      }
+      if (img.src.startsWith('data:')) return img.src
+      // 3) fetch → data-URL (blob: у TG, same-origin, CORS-дружелюбные CDN)
+      try {
+        const blob = await fetch(img.src).then(r => r.blob())
+        if (blob && blob.size && blob.size < 300000) {
+          const d = await new Promise(res => {
+            const fr = new FileReader()
+            fr.onload = () => res(fr.result)
+            fr.onerror = () => res(null)
+            fr.readAsDataURL(blob)
+          })
+          if (d) return d
+        }
+      } catch (e) {}
+      // 4) canvas: рисуем УЖЕ загруженный <img> (blob: у TG — чистый источник)
+      try {
+        const c = document.createElement('canvas')
+        c.width = img.naturalWidth || 64; c.height = img.naturalHeight || 64
+        c.getContext('2d').drawImage(img, 0, 0)
+        return c.toDataURL('image/jpeg', 0.85)
+      } catch (e) {}
+      // 5) кросс-доменный CDN (MAX: i.oneme.ru): перезагружаем копию с
+      //    crossOrigin=anonymous — если сервер отдаёт ACAO, canvas чист
+      try {
+        const d = await new Promise(res => {
+          const im = new Image()
+          im.crossOrigin = 'anonymous'
+          const to = setTimeout(() => res(null), 4000)
+          im.onload = () => {
+            clearTimeout(to)
+            try {
+              const c = document.createElement('canvas')
+              c.width = im.naturalWidth || 64; c.height = im.naturalHeight || 64
+              c.getContext('2d').drawImage(im, 0, 0)
+              res(c.toDataURL('image/jpeg', 0.85))
+            } catch (e) { res(null) }
+          }
+          im.onerror = () => { clearTimeout(to); res(null) }
+          im.src = img.src
+        })
+        if (d) return d
+      } catch (e) {}
+      return null
     } catch (e) { return null }
   })()
 }
