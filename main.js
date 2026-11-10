@@ -203,6 +203,7 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: '#1e1f22',
     title: 'ChatHub — все чаты в одном окне',
+    icon: path.join(__dirname, 'build', 'icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
