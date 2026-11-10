@@ -138,14 +138,21 @@ body.split-dragging webview { pointer-events: none !important; }
 .chat-list:hover::-webkit-scrollbar-thumb { background: rgba(128,128,128,.6); background-clip: content-box; }
 .chat-list::-webkit-scrollbar-thumb:hover { background: rgba(128,128,128,.85); background-clip: content-box; }
 .chat-list:not(:hover)::-webkit-scrollbar-thumb { background: transparent; }
-.chat-row { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 9px; cursor: pointer; }
+.chat-row { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 9px; cursor: pointer; position: relative; }
 .chat-row:hover { background: var(--bg); }
 .chat-row.selected { background: rgba(88, 101, 242, .25); }
 .chat-row-text { flex: 1; min-width: 0; }
 .chat-row-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-row-svc { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chat-row .icon-btn { opacity: 0; flex: 0 0 auto; padding: 2px 5px; }
-.chat-row:hover .icon-btn, .chat-row.selected .icon-btn { opacity: 1; }
+/* кнопки 📌 и ✕ — ПОВЕРХ строки (position:absolute), места под них не
+   резервируется: название чата тянется на всю длину, кнопки появляются
+   только при наведении и не обрезают заголовок в покое */
+.chat-row .icon-btn { position: absolute; top: 50%; transform: translateY(-50%); opacity: 0; pointer-events: none; z-index: 2; padding: 2px 5px; }
+.chat-row:hover .icon-btn, .chat-row.selected .icon-btn { opacity: 1; pointer-events: auto; background: var(--bg); }
+/* при наведении счётчик уступает место кнопкам */
+.chat-row:hover .row-badge { opacity: 0; }
+.row-del { right: 6px; }
+.row-pin-btn { right: 34px; font-size: 13px; line-height: 1; }
 /* ручное закрепление 📌 (как в Telegram): закреплённый чат — полоса + подсвеченный пин */
 .chat-row.priority { box-shadow: inset 3px 0 0 var(--accent); }
 .row-pin-btn { font-size: 13px; line-height: 1; }
