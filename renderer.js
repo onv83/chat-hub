@@ -1025,6 +1025,12 @@ async function tgSelectFolder(wv, wcId, folderId) {
   } catch { return null }
 }
 async function tgSearchResolve(favs) {
+  // Проходы печатают в поле поиска TG и скроллят список диалогов. Пока окно
+  // приложения В ФОКУСЕ — не трогаем мессенджер вообще: пользователь может
+  // прямо сейчас смотреть на вкладку Telegram (детектор «простоя» по вводу
+  // этого не ловил — чтение без кликов выглядело как простой). Проходы
+  // догонят, когда приложение свернуто или в фоне.
+  if (document.hasFocus()) return null
   if (tgSearchBusy || Date.now() - tgSearchAt < 20000) return null
   const pane = document.querySelector('section[data-tab="svc:tg"]')
   if (pane && pane.classList.contains('visible')) return null // не мешаем пользователю
