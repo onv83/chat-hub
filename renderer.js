@@ -443,6 +443,10 @@ function ensureSbChrome(bar) {
 // применить тему (тёмная по умолчанию / светлая)
 function applyTheme() {
   document.body.classList.toggle('theme-light', state.cfg.theme === 'light')
+  // тема и для ВСТРОЕННЫХ чатов: мессенджеры в webview слушают
+  // prefers-color-scheme («системная тема») — переключаем nativeTheme
+  // через main, тогда веб-версии следуют за темой ChatHub
+  try { window.hub.setThemeSource(state.cfg.theme === 'light' ? 'light' : 'dark') } catch {}
 }
 
 function activateTab(id) {
