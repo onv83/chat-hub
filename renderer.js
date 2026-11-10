@@ -2123,12 +2123,12 @@ async function __chatHubTgUnread(favs, allowScroll) {
   collect().forEach(x => { if (!seen.has(x.pid)) seen.set(x.pid, x) })
   // Аватарный свип: webk виртуализирует список — в DOM только видимые
   // строки, аватарки нижних чатов («Агасиев» и др.) добираются только
-  // прокруткой. Раз в 45 с, пока есть избранные без аватарки, проходим
+  // прокруткой. Раз в 15 с, пока есть избранные без аватарки, проходим
   // список шагами (+600 px, scroll-событие, пауза на перерисовку — как
   // tgScrollLoad) и собираем строки в общий пул. Прокрутка невидима:
   // свип идёт только когда вкладка сервиса не на экране (allowScroll).
   if (allowScroll && favs.some(f => f.needAvatar) &&
-      Date.now() - (window.__hubAvSweepAt || 0) > 45000) {
+      Date.now() - (window.__hubAvSweepAt || 0) > 15000) {
     window.__hubAvSweepAt = Date.now()
     const scr = () => {
       const cs = Array.from(document.querySelectorAll('.chatlist-parts'))
