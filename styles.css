@@ -75,11 +75,16 @@ body.split-dragging webview { pointer-events: none !important; }
 .svcbar .fav-menu-wrap { position: relative; margin-left: 10px; }
 .svcbar .fav-menu-wrap .btn { margin-left: 0; }
 .fav-menu {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 40;
   min-width: 280px; max-height: 340px; overflow-y: auto;
   background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
   padding: 6px; box-shadow: 0 12px 32px rgba(0,0,0,.45);
 }
+/* прокрутка в стиле приложения (тонкая, проявляется при наведении) */
+.fav-menu::-webkit-scrollbar { width: 8px; }
+.fav-menu::-webkit-scrollbar-track { background: transparent; }
+.fav-menu::-webkit-scrollbar-thumb { background: rgba(128,128,128,.35); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+.fav-menu:hover::-webkit-scrollbar-thumb { background: rgba(128,128,128,.6); background-clip: content-box; }
 .fav-menu-item { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; cursor: pointer; }
 .fav-menu-item:hover { background: var(--bg); }
 .fav-menu-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13px; }
@@ -304,7 +309,7 @@ body.sb-resizing webview { pointer-events: none !important; }
 
 /* узкая панель — только большие значки */
 body.layout-sidebar.sb-rail #tabbar { width: 76px !important; }
-body.layout-sidebar.sb-rail .brand { padding: 10px 0; text-align: center; font-size: 12px; }
+body.layout-sidebar.sb-rail .brand { padding: 10px 0; justify-content: center; text-align: center; font-size: 12px; }
 body.layout-sidebar.sb-rail #tabs { padding: 8px 0; }
 body.layout-sidebar.sb-rail .tab { flex-direction: column; gap: 5px; padding: 9px 0; justify-content: center; }
 body.layout-sidebar.sb-rail .tab .tab-label { display: none; }
