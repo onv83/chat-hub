@@ -614,7 +614,21 @@ function makeChatRow(p) {
   row.classList.toggle('priority', !!p.priority)
   badge.title = svcName
   const ttl = row.querySelector('.chat-row-title')
-  ttl.textContent = p.title
+  // п.19: одинаковые названия в одном сервисе различаем автоматически —
+  // суффикс из ссылки (@username или id), чтобы два «Агасиева» были видны
+  // как разные чаты без ручного переименования
+  let dispTitle = p.title
+  try {
+    const lc = s => String(s || '').trim().toLowerCase()
+    const same = state.cfg.pinned.filter(q => q.serviceId === p.serviceId && lc(q.title) === lc(p.title))
+    if (same.length > 1) {
+      const um = String(p.url || '').match(/#@([A-Za-z0-9_]{3,})/)
+      const ip = um ? null : String(p.url || '').match(/#(-?\d+)/)
+      if (um) dispTitle = p.title + ' (@' + um[1] + ')'
+      else if (ip) dispTitle = p.title + ' (id ' + ip[1] + ')'
+    }
+  } catch {}
+  ttl.textContent = dispTitle
   ttl.title = p.url
   row.querySelector('.chat-row-svc').textContent = svcName + (state.lastMsgText[p.id] ? ' · ' + state.lastMsgText[p.id] : '')
   row.onclick = (e) => { if (!e.target.closest('.icon-btn')) selectChat(p.id) }
@@ -1153,6 +1167,7 @@ async function tgSearchResolve(favs) {
           return {
             pid: r.getAttribute('data-peer-id') || String(r.getAttribute('href') || '').replace('#', ''),
             title: t ? t.textContent.trim() : '',
+            text: String(r.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 120),
             time: tp ? tp.textContent.trim() : '',
             unreadTxt: bd ? bd.textContent.trim() : '',
             mentions: mentions,
@@ -1178,7 +1193,13 @@ async function tgSearchResolve(favs) {
           const stopU = new Set(['ext', 'int', 'астра', 'astrа', 'astra', 'chat', 'чат', 'группа', 'team', 'test', 'rb', 'vm'])
           const wordsU = String(f.title || '').split(/[\s|,/()]+/).map(w => normU(w)).filter(w => w.length >= 4 && !stopU.has(w))
           let best = null, bestScore = 0
-          for (const r of rows) {
+          // п.19: сначала точное вхождение @username в тексте строки поиска —
+          // два аккаунта с одинаковым названием различимы только юзернеймом,
+          // title-скоринг здесь выбирал бы первого попавшегося
+          const uHit = rows.find(r => r.inSearch && r.pid && String(r.pid).charAt(0) !== '-' &&
+            r.text && r.text.indexOf('@' + unameQuery) >= 0)
+          if (uHit) { best = uHit; bestScore = 999 }
+          else for (const r of rows) {
             // только результаты поиска (оверлей), не список позади него:
             // строка «Александр …» из обычного списка выдавала pid первого
             // аккаунта ОБОИМ пинам-дубликатам
@@ -1311,6 +1332,9 @@ function tgPidSafe(pin, pid, rowTitle) {
   if (!pin || !pid) return false
   const upid = (String(pin.url || '').match(/#(-?\d+)/) || [])[1]
   if (upid && String(upid) === String(pid)) return true
+  // п.19: пин с @username в ссылке получает pid ТОЛЬКО от собственного
+  // username-поиска — общий title-матчинг не различает дубликаты названий
+  if (/@([A-Za-z0-9_]{3,})/.test(String(pin.url || ''))) return false
   const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
   const stop = new Set(['ext', 'int', 'астра', 'astrа', 'astra', 'chat', 'чат', 'группа', 'team', 'test', 'rb', 'vm'])
   const words = String(pin.title || '').split(/[\s|,/()]+/).map(w => norm(w)).filter(w => w.length >= 4 && !stop.has(w))
