@@ -447,12 +447,51 @@ function ensureSbChrome(bar) {
 }
 
 // применить тему (тёмная по умолчанию / светлая)
+/* MM (Mattermost) тему в настройках аккаунта держит сам и prefers-color-scheme
+   не слушает: красим его через localStorage['theme'] (резолвнутая тема MM).
+   При светлой теме ChatHub подменяем набор цветов на светлый и перезагружаем
+   MM-вьюхи; исходная тёмная сохраняется в __hubMmThemeBackup для отката. */
+const MM_LIGHT_THEME = {
+  mainBg: '255, 255, 255', mainFg: '49, 50, 52',
+  buttonBg: '74, 124, 232', buttonFg: '255, 255, 255',
+  sidebarBg: '242, 244, 247', sidebarFg: '49, 50, 52',
+  sidebarTextActiveBorder: '74, 124, 232', sidebarWhiteLogo: 'false',
+  link: '56, 111, 229', linkVisited: '#551a8b',
+  propDefault: '#fff', propGray: '#EDEDED', propBrown: '#F7DDC3', propOrange: '#ffd3c1',
+  propYellow: '#f7f0b6', propGreen: '#c7eac3', propBlue: '#B1D1F6', propPurple: '#e6d0ff',
+  propPink: '#ffd6e9', propRed: '#ffa9a9'
+}
+
+async function applyMmTheme(theme) {
+  const light = theme === 'light'
+  const views = [state.svcViews['mm']]
+  for (const [pid, wv] of Object.entries(state.pinViews || {})) {
+    const pin = (state.cfg.pinned || []).find(p => p.id === pid)
+    if (pin && pin.serviceId === 'mm' && wv) views.push(wv)
+  }
+  for (const wv of views.filter(Boolean)) {
+    try {
+      await wv.executeJavaScript('(function(){\n' +
+        '  try {\n' +
+        '    if (!localStorage.getItem("__hubMmThemeBackup")) localStorage.setItem("__hubMmThemeBackup", localStorage.getItem("theme") || "")\n' +
+        (light
+          ? '    localStorage.setItem("theme", ' + JSON.stringify(JSON.stringify(MM_LIGHT_THEME)) + ')\n'
+          : '    const b = localStorage.getItem("__hubMmThemeBackup"); if (b) localStorage.setItem("theme", b)\n') +
+        '  } catch (e) {}\n' +
+        '})()')
+      wv.reload()
+    } catch (e) {}
+  }
+}
+
 function applyTheme() {
   document.body.classList.toggle('theme-light', state.cfg.theme === 'light')
   // тема и для ВСТРОЕННЫХ чатов: мессенджеры в webview слушают
   // prefers-color-scheme («системная тема») — переключаем nativeTheme
   // через main, тогда веб-версии следуют за темой ChatHub
   try { window.hub.setThemeSource(state.cfg.theme === 'light' ? 'light' : 'dark') } catch {}
+  // MM красим отдельно (localStorage + перезагрузка вьюх)
+  applyMmTheme(state.cfg.theme)
 }
 
 function activateTab(id) {
