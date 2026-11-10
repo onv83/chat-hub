@@ -9,6 +9,9 @@ app.commandLine.appendSwitch(
   '<-loopback>;*.astralinux.ru;*.astra-team.ru;localhost;127.0.0.1'
 )
 
+// dev-копия: CHATHUB_DEV_DATA переносит userData (сессии, конфиг) в отдельную
+// папку, чтобы версия для разработки не делила состояние с рабочей
+if (process.env.CHATHUB_DEV_DATA) app.setPath('userData', process.env.CHATHUB_DEV_DATA)
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
