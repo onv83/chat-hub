@@ -20,7 +20,7 @@ if (process.env.CHATHUB_DEV_DATA) {
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
-  cssDefaultsVersion: 5,
+  cssDefaultsVersion: 6,
   tabIcons: false,
   services: [
     { id: 'mm',  name: 'Mattermost',             url: 'https://im.astralinux.ru',    partition: 'persist:mm' },
@@ -45,7 +45,10 @@ const DEFAULT_CONFIG = {
     // и ширину ленты в пинах задаёт insertCSS в ensurePinView (там медиа-сдвиг);
     // в конфиге — только базовые правила.
     max: '.app>aside{display:none!important}.app{margin:0!important;width:100%!important;max-width:none!important;min-width:0!important;box-sizing:border-box!important}',
-    ydx: '.yamb-root__layout>.ui-layout_direction_column,.yamb-sidebar{display:none!important}'
+    // Yandex GlobalBar (64px: Алиса/Почта/Диск...) после обновления веба торчит
+    // в пинах отдельно от колонки — скрываем его и там (в сервисной вкладке —
+    // своим insertCSS).
+    ydx: '.yamb-root__layout>.ui-layout_direction_column,.yamb-sidebar,[class^="GlobalBarRoot"]{display:none!important}'
   },
   zoom: { mm: 1, tg: 1, max: 1, ydx: 1 },
   favBadgeAlways: false,
