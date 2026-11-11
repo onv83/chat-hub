@@ -20,7 +20,7 @@ if (process.env.CHATHUB_DEV_DATA) {
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
-  cssDefaultsVersion: 4,
+  cssDefaultsVersion: 5,
   tabIcons: false,
   services: [
     { id: 'mm',  name: 'Mattermost',             url: 'https://im.astralinux.ru',    partition: 'persist:mm' },
@@ -41,9 +41,10 @@ const DEFAULT_CONFIG = {
     // TG: вместо фиксированного сдвига -202px (при сужении уводил чат за левый
     // край) — растяжка #column-center на контейнер (absolute: left/right 0).
     tg: '.sidebar,.right-column{display:none!important} #column-center{margin:0!important;left:0!important;right:0!important;width:auto!important;max-width:none!important;transform:none!important}',
-    // MAX: без фиксированного -77px (та же болезнь при сужении). На >=950px
-    // MAX сам пересчитывает grid — не трогаем; пустой трек 77px там допустим.
-    max: '.app>aside{display:none!important}.app>main{width:100%!important}.app{margin:0!important;width:100%!important;max-width:none!important;min-width:0!important;box-sizing:border-box!important}',
+    // MAX: без фиксированного -77px (та же болезнь при сужении). Навигацию MAX
+    // и ширину ленты в пинах задаёт insertCSS в ensurePinView (там медиа-сдвиг);
+    // в конфиге — только базовые правила.
+    max: '.app>aside{display:none!important}.app{margin:0!important;width:100%!important;max-width:none!important;min-width:0!important;box-sizing:border-box!important}',
     ydx: '.yamb-root__layout>.ui-layout_direction_column,.yamb-sidebar{display:none!important}'
   },
   zoom: { mm: 1, tg: 1, max: 1, ydx: 1 },

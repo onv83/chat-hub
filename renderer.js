@@ -993,6 +993,10 @@ function ensurePinView(p) {
   wv.addEventListener('dom-ready', () => {
     applyColumnTweaks(wv, p)
     captureSvcIcon(svc.id, wv)
+    // MAX: web-версия обновилась и снова показывает навигационный рейл (77px),
+    // columnCss его не крыл. Прячем стили-листом и на >=950px закрываем пустую
+    // grid-колонку сдвигом ленты (медиа); ниже 950 рейла нет — сдвига нет.
+    if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app>main{width:100% !important; max-width:none !important} @media (min-width:950px){.app>main{margin-left:-77px !important; width:calc(100% + 77px) !important}}') } catch (e) {} }
     // MM: правая панель (RHS) могла остаться открытой с прошлой сессии — закрываем
     // один раз после загрузки. Треды по «N ответов» продолжают открываться (п.12).
     if (svc.id === 'mm') setTimeout(() => {
