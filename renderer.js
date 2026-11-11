@@ -1958,7 +1958,7 @@ async function pollUnread() {
         // обёрткой в области видимости сериализованного экстрактора.
         state.pinAvatars = state.pinAvatars || {}
         const out = await cand.executeJavaScript(
-          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; const formatMaxPreview = ' + formatMaxPreview.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id], needUnread: svc.id === 'tg' && (!state.unreadTotals[f.id] || Date.now() - ((state.unreadTotalsAt || {})[f.id] || 0) > 30000) }))) + ',' + JSON.stringify(allowScroll) + ') })()'
+          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; const formatMaxPreview = ' + formatMaxPreview.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id], needUnread: (svc.id === 'tg' || svc.id === 'max' || svc.id === 'ydx') && (!state.unreadTotals[f.id] || Date.now() - ((state.unreadTotalsAt || {})[f.id] || 0) > 30000) }))) + ',' + JSON.stringify(allowScroll) + ') })()'
         )
         const r = JSON.parse(out)
         // TG: запоминаем сопоставление пин → числовой peer-id (после первого
@@ -2924,7 +2924,30 @@ function formatMaxPreview(text, author) {
   return preview
 }
 
-async function __chatHubMaxUnread(favs) {
+async function __chatHubMaxUnread(favs, allowScroll) {
+  // MAX виртуализирует список: нижние чаты не попадают в DOM, пока не доскроллишь.
+  // Периодически проходим список прокруткой, чтобы превью и непрочитанные
+  // доезжали и для нижних избранных чатов. Чат при этом не открывается.
+  if (allowScroll && favs.some(f => f.needAvatar || f.needUnread) &&
+      Date.now() - (window.__hubMaxSweepAt || 0) > 15000) {
+    window.__hubMaxSweepAt = Date.now()
+    const scr = () => {
+      const cs = Array.from(document.querySelectorAll('.scrollable.scrollListScrollable'))
+        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50 })
+      return cs[0] || null
+    }
+    const c = scr()
+    if (c) {
+      for (let step = 0; step < 40; step++) {
+        const before = c.scrollTop
+        c.scrollTop = Math.min(c.scrollTop + 700, c.scrollHeight)
+        c.dispatchEvent(new Event('scroll', { bubbles: true }))
+        await new Promise(z => setTimeout(z, 250))
+        if (c.scrollTop === before) break
+      }
+      try { c.scrollTop = 0 } catch (e) {}
+    }
+  }
   const out = []
   const items = Array.from(document.querySelectorAll('aside div.item'))
   const nameOf = item => {
@@ -2978,7 +3001,29 @@ async function __chatHubMaxUnread(favs) {
 // Непрочитанные: контейнер .yamb-chat-list-item__badges — при непрочитанных
 // туда рендерится бейдж с числом (aria-labelledby строки ссылается на
 // элемент «<id>_unread», в DOM он появляется только с бейджем).
-async function __chatHubYdxUnread(favs) {
+async function __chatHubYdxUnread(favs, allowScroll) {
+  // Телемост тоже виртуализирует список: проходим его прокруткой, чтобы
+  // нижние чаты получали превью и непрочитанные, как TG/MAX.
+  if (allowScroll && favs.some(f => f.needAvatar || f.needUnread) &&
+      Date.now() - (window.__hubYdxSweepAt || 0) > 15000) {
+    window.__hubYdxSweepAt = Date.now()
+    const scr = () => {
+      const cs = Array.from(document.querySelectorAll('.ui-scroller.ui-virtual-list__scroller'))
+        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50 })
+      return cs[0] || null
+    }
+    const c = scr()
+    if (c) {
+      for (let step = 0; step < 40; step++) {
+        const before = c.scrollTop
+        c.scrollTop = Math.min(c.scrollTop + 700, c.scrollHeight)
+        c.dispatchEvent(new Event('scroll', { bubbles: true }))
+        await new Promise(z => setTimeout(z, 250))
+        if (c.scrollTop === before) break
+      }
+      try { c.scrollTop = 0 } catch (e) {}
+    }
+  }
   const out = []
   const items = Array.from(document.querySelectorAll('.yamb-chat-list-item'))
   const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
