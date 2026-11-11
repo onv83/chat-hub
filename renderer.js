@@ -13,6 +13,9 @@ const state = {
   msgAuth: {},         // pinId -> {text,out,name}: авторство, выученное из открытого чата
   rankAct: {},         // pinId -> позиция строки в списке мессенджера (меньше = свежее; 9999 = не в списке)
   prevUnread: {},      // pinId -> прошлое число непрочитанных (детект новых сообщений)
+  unreadBaseC: {},     // pinId -> база count «новых» (сохраняется в cfg.activity)
+  unreadBaseM: {},     // pinId -> база mentions «новых» (сохраняется в cfg.activity)
+  unreadTotals: {},    // pinId -> последние достоверные {c,m} непрочитанных
   lastUsed: {},        // pinId -> Date.now() последнего открытия (для вытеснения неактивных вьюх)
   svcIcons: {},        // serviceId -> data URL фирменной иконки мессенджера (favicon)
   lastMsgAt: {},       // pinId -> время последнего сообщения в чате (мс) — сортировка «главное — активность»
@@ -20,6 +23,7 @@ const state = {
   mmUserIds: {},       // username Mattermost -> user id (для мэтчинга DM-каналов по API)
   mmChannelsAt: 0,     // когда последний раз читали last_post_at через API MM
   tgPeerOf: {},        // TG pinId -> числовой peer-id (однозначное сопоставление строк)
+  unreadTotalsAt: {},  // pinId -> Date.now() последнего достоверного замера непрочитанных
   tgSearchedAt: {}     // TG pinId -> когда последний раз искали через поиск webk
 }
 
@@ -325,6 +329,10 @@ function ensureKeys(cfg) {
     merge(state.liveAct, A.liveAct)
     merge(state.tgPeerOf, A.tgPeerOf)
     merge(state.prevUnread, A.prevUnread)
+    // база «новых» непрочитанных переживает перезапуск: без неё после
+    // рестарта первый замер принимал весь запас за базу и счётчик пропадал
+    merge(state.unreadBaseC, A.unreadBaseC)
+    merge(state.unreadBaseM, A.unreadBaseM)
     if (A.tgScrollDone) tgScrollDone = true
     console.log('[hub] активность восстановлена из конфига:', Object.keys(A.lastMsgAt || {}).length, 'времён')
   }
@@ -374,21 +382,26 @@ function ensureKeys(cfg) {
 // П.13: сохранение накопленной активности в config.json — дебаунс 20 с,
 // пишем только когда что-то реально накопили (времена/pid/liveAct)
 let actSaveTimer = 0
+function activitySnapshot() {
+  return {
+    lastMsgAt: { ...state.lastMsgAt },
+    lastMsgText: { ...state.lastMsgText },
+    lastMsgPreview: { ...state.lastMsgPreview },
+    msgAuth: { ...state.msgAuth },
+    liveAct: { ...state.liveAct },
+    tgPeerOf: { ...state.tgPeerOf },
+    prevUnread: { ...state.prevUnread },
+    unreadBaseC: { ...state.unreadBaseC },
+    unreadBaseM: { ...state.unreadBaseM },
+    tgScrollDone: !!tgScrollDone
+  }
+}
 function scheduleActSave() {
   if (actSaveTimer) return
   actSaveTimer = setTimeout(() => {
     actSaveTimer = 0
     try {
-      state.cfg.activity = {
-        lastMsgAt: { ...state.lastMsgAt },
-        lastMsgText: { ...state.lastMsgText },
-        lastMsgPreview: { ...state.lastMsgPreview },
-        msgAuth: { ...state.msgAuth },
-        liveAct: { ...state.liveAct },
-        tgPeerOf: { ...state.tgPeerOf },
-        prevUnread: { ...state.prevUnread },
-        tgScrollDone: !!tgScrollDone
-      }
+      state.cfg.activity = activitySnapshot()
       window.hub.saveConfig(state.cfg)
     } catch (e) {}
   }, 20000)
@@ -905,7 +918,7 @@ function renderChatList() {
 
   if (has) {
     const sel = favs.find(x => x.id === state.cfg.selectedPinId) || favs[0]
-    selectChat(sel.id)
+    selectChat(sel.id, { markRead: false })
   } else {
     for (const v of Object.values(state.pinViews)) v.classList.remove('active')
   }
@@ -958,11 +971,11 @@ function makeChatRow(p) {
     <div class="chat-row-text">
       <div class="row-line1">
         <div class="chat-row-title"></div>
+        <span class="row-badge hidden"></span>
         <span class="row-time"></span>
       </div>
       <div class="row-line2">
         <div class="chat-row-src"></div>
-        <span class="row-badge hidden"></span>
       </div>
       <div class="chat-row-preview"></div>
     </div>
@@ -1124,18 +1137,23 @@ document.addEventListener('click', () => closeAllRowMenus())
 window.addEventListener('blur', () => closeAllRowMenus())
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllRowMenus() })
 
-function selectChat(pinId) {
+function selectChat(pinId, opts) {
+  opts = opts || {}
   const p = state.cfg.pinned.find(x => x.id === pinId)
   if (!p) return
   const svc = state.cfg.services.find(s => s.id === p.serviceId)
   if (!svc) return
   state.cfg.selectedPinId = pinId
-  // открыл чат → его «новые» обнуляются: базой становится текущий запас
-  if (state.unreadTotals && state.unreadTotals[pinId]) {
+  // открыл чат ЯВНО (клик) → его «новые» обнуляются. Автовыбор при старте/
+  // перерисовке списка базу не трогает — иначе счётчик исчезает при рестарте.
+  if (opts.markRead !== false && state.unreadTotals && state.unreadTotals[pinId]) {
     state.unreadBaseC = state.unreadBaseC || {}
     state.unreadBaseM = state.unreadBaseM || {}
     state.unreadBaseC[pinId] = state.unreadTotals[pinId].c || 0
     state.unreadBaseM[pinId] = state.unreadTotals[pinId].m || 0
+    state.cfg.activity = state.cfg.activity || {}
+    state.cfg.activity.unreadBaseC = { ...state.unreadBaseC }
+    state.cfg.activity.unreadBaseM = { ...state.unreadBaseM }
   }
   window.hub.saveConfig(state.cfg)
   document.querySelectorAll('.chat-row').forEach(r => r.classList.toggle('selected', r.dataset.pin === pinId))
@@ -1917,7 +1935,7 @@ async function pollUnread() {
         // обёрткой в области видимости сериализованного экстрактора.
         state.pinAvatars = state.pinAvatars || {}
         const out = await cand.executeJavaScript(
-          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id] }))) + ',' + JSON.stringify(allowScroll) + ') })()'
+          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id], needUnread: svc.id === 'tg' && (!state.unreadTotals[f.id] || Date.now() - ((state.unreadTotalsAt || {})[f.id] || 0) > 30000) }))) + ',' + JSON.stringify(allowScroll) + ') })()'
         )
         const r = JSON.parse(out)
         // TG: запоминаем сопоставление пин → числовой peer-id (после первого
@@ -1978,32 +1996,50 @@ async function pollUnread() {
       // (state.mmPinCounts); остальные сервисы — счётчики их экстракторов.
       let rawC = r.count || 0
       let rawM = r.mentions || 0
-      let mmNoApi = false
+      let fresh = r.found !== false
       if (svc.id === 'mm') {
         const mp = state.mmPinCounts && state.mmPinCounts[r.id]
-        if (!mp) mmNoApi = true            // API ещё не ответил — бейдж НЕ трогаем
-        else { rawC = mp.count || 0; rawM = mp.mentions || 0 }
+        fresh = !!mp
+        if (mp) { rawC = mp.count || 0; rawM = mp.mentions || 0 }
         r.count = rawC
         r.mentions = rawM
         if (rawC > 0 || rawM > 0) r.unread = true
       }
       let dC = 0, dM = 0, dU = false
       const row = document.querySelector('.chat-row[data-pin="' + r.id + '"]')
-      if (!mmNoApi) {
-        state.unreadBaseC = state.unreadBaseC || {}
-        state.unreadBaseM = state.unreadBaseM || {}
-        state.unreadTotals = state.unreadTotals || {}
-        state.unreadTotals[r.id] = { c: rawC, m: rawM }
-        // база ставится ОДИН раз (первый замер); вниз сдвигается только при
-        // открытии чата (selectChat) — иначе «прочитал в другом клиенте»
-        // обнуляло базу и backlog снова всплывал как «новое»
-        if (state.unreadBaseC[r.id] === undefined) state.unreadBaseC[r.id] = rawC
-        if (state.unreadBaseM[r.id] === undefined) state.unreadBaseM[r.id] = rawM
-        dC = Math.max(0, rawC - state.unreadBaseC[r.id])
-        dM = Math.max(0, rawM - state.unreadBaseM[r.id])
-        dU = dC > 0 || dM > 0
-        if (row) setRowBadge(row, { count: dC, mentions: dM, unread: dU })
+      state.unreadBaseC = state.unreadBaseC || {}
+      state.unreadBaseM = state.unreadBaseM || {}
+      state.unreadTotals = state.unreadTotals || {}
+      // строки вне виртуализированного списка не должны затирать счётчик нулём:
+      // держим последний достоверный запас, пока мессенджер не отдаст свежие данные
+      if (!fresh) {
+        const prevT = state.unreadTotals[r.id]
+        if (prevT) { rawC = prevT.c || 0; rawM = prevT.m || 0 }
       }
+      if (fresh || state.unreadTotals[r.id]) {
+        if (fresh) {
+          state.unreadTotals[r.id] = { c: rawC, m: rawM }
+          state.unreadTotalsAt[r.id] = Date.now()
+        }
+        // база ставится ОДИН раз (первый замер); вниз сдвигается только при
+        // открытии чата (selectChat). После рестарта она восстанавливается
+        // из cfg.activity, а для старого конфига — из prevUnread.
+        if (state.unreadBaseC[r.id] === undefined) {
+          const prevTotal = state.prevUnread[r.id]
+          if (prevTotal !== undefined) {
+            state.unreadBaseC[r.id] = Math.max(0, prevTotal - rawM)
+            state.unreadBaseM[r.id] = rawM
+          } else {
+            state.unreadBaseC[r.id] = rawC
+            state.unreadBaseM[r.id] = rawM
+          }
+        }
+        const delta = unreadDeltaFor(r.id, rawC, rawM)
+        dC = delta.dC
+        dM = delta.dM
+        dU = delta.dU
+        if (row) setRowBadge(row, { count: dC, mentions: dM, unread: dU })
+      } else if (row) setRowBadge(row, { count: 0, mentions: 0, unread: false })
       // аватарка чата, пойманная экстрактором → кэш и в строку (до
       // следующего рестарта; монограмма-заглушка остаётся, если не поймали)
       if (r.avatar && !state.pinAvatars[r.id]) {
@@ -2065,6 +2101,8 @@ async function pollUnread() {
       } }
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
+      state.__prevLastMsgAt = state.__prevLastMsgAt || {}
+      state.__prevLastMsgAt[r.id] = state.lastMsgAt[r.id] || 0
       if (r.time) {
         const pt = parseChatTime(r.time)
         if (pt.at) {
@@ -2072,17 +2110,15 @@ async function pollUnread() {
           state.lastMsgText[r.id] = fmtChatWhen(pt.at, pt.dayOnly)
         }
       }
-      // активность для сортировки: бамп на ПРИРОСТ непрочитанных (в т.ч. в чате,
-      // который открыт прямо сейчас — «если туда написали, он поднимается наверх»),
-      // но не на первом замере (запас непрочитанных на старте — не «новое сообщение»).
-      // Само открытие чата активностью больше НЕ считается — только сообщения
-      // бамп активности — ТОЛЬКО по достоверным данным (MM: пока API не ответил,
-      // сайдбарные числа нулевые/упоминательные; «прыжок» при первом ответе API
-      // поднимал ВСЕ чаты сразу — сортировка ломалась)
-      if (!mmNoApi) {
+      // активность для сортировки: бамп только если выросло ИМЕННО время
+      // последнего сообщения. Рост непрочитанных на старом чате (прочитали
+      // в другом клиенте/дошёл старый бейдж) не должен поднимать его наверх.
+      if (fresh) {
         const total = (r.mentions || 0) + (r.count || 0) + (r.unread ? 1 : 0)
         const prev = state.prevUnread[r.id]
-        if (prev !== undefined && total > prev) {
+        const prevAt = state.__prevLastMsgAt && state.__prevLastMsgAt[r.id] || 0
+        const nowAt = state.lastMsgAt[r.id] || 0
+        if (shouldBumpLiveAct(prev, total, prevAt, nowAt)) {
           state.liveAct[r.id] = Date.now()
         }
         state.prevUnread[r.id] = total
@@ -2375,6 +2411,33 @@ function sortFavoritesByActivity() {
   }
 }
 
+function unreadDeltaFor(pinId, rawC, rawM) {
+  const bc = state.unreadBaseC && state.unreadBaseC[pinId] !== undefined ? state.unreadBaseC[pinId] : rawC
+  const bm = state.unreadBaseM && state.unreadBaseM[pinId] !== undefined ? state.unreadBaseM[pinId] : rawM
+  const dC = Math.max(0, rawC - bc)
+  const dM = Math.max(0, rawM - bm)
+  return { dC, dM, dU: dC > 0 || dM > 0 }
+}
+
+function shouldBumpLiveAct(prevTotal, total, prevAt, nowAt) {
+  return prevTotal !== undefined && total > prevTotal && prevAt > 0 && nowAt > prevAt
+}
+
+function isUsernameFallbackName(url, name) {
+  const um = String(url || '').match(/#@([-\w]+)/)
+  if (!um) return false
+  const fallback = decodeURIComponent(um[1]).replace(/[_\.]+/g, ' ')
+  return String(name || '').trim() === fallback || String(name || '').trim() === um[1]
+}
+
+function shouldAutoRenameTitle(svcId, title, url) {
+  if (svcId !== 'tg') return true
+  const t = String(title || '').trim()
+  if (!t) return true
+  if (isUsernameFallbackName(url, t)) return true
+  return /^(telegram web|чат|чаты|новый чат|messenger|dialogs)$/i.test(t)
+}
+
 function setRowBadge(row, r) {
   const b = row.querySelector('.row-badge')
   if (!b) return
@@ -2455,11 +2518,11 @@ async function learnAuthorSweep() {
     for (const pin of batch) {
       try {
         const haveView = !!(state.pinViews || {})[pin.id]
+        let pv = haveView ? state.pinViews[pin.id] : null
         if (!haveView) {
-          await ensurePinView(pin)
+          pv = ensurePinView(pin)
           await new Promise(z => setTimeout(z, 1200))
         }
-        const pv = (state.pinViews || {})[pin.id]
         if (!pv) continue
         const lb = await grabViewLastMsg(pv, pin.url)
         if (!lb || !lb.text) continue
@@ -2661,7 +2724,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
   // список шагами (+600 px, scroll-событие, пауза на перерисовку — как
   // tgScrollLoad) и собираем строки в общий пул. Прокрутка невидима:
   // свип идёт только когда вкладка сервиса не на экране (allowScroll).
-  if (allowScroll && favs.some(f => f.needAvatar) &&
+  if (allowScroll && favs.some(f => f.needAvatar || f.needUnread) &&
       Date.now() - (window.__hubAvSweepAt || 0) > 15000) {
     window.__hubAvSweepAt = Date.now()
     const scr = () => {
@@ -2902,7 +2965,10 @@ async function applyColumnTweaks(wv, p, attempt) {
       const nm = String(name || '').trim()
       const generic = /^(telegram web|веб-версия max|mattermost|max|чаты|чат|новый чат|messenger|dialogs)$/i.test(nm)
         || /^astra team chat/i.test(nm) || /присоедин[ися]*\s*к\s*команд/i.test(nm)
-      if (name && !generic && name !== p.title && pinMatches(p, svc, wv.getURL(), name)) {
+      // username-фолбэк («Astra lin») не является именем чата: пока webk
+      // не отдал строку/шапку, пользовательское название не перезаписываем
+      const isUsernameFallback = svc.id === 'tg' && isUsernameFallbackName(p.url, nm)
+      if (name && !generic && !isUsernameFallback && shouldAutoRenameTitle(svc.id, p.title, p.url) && name !== p.title && pinMatches(p, svc, wv.getURL(), name)) {
         p.title = name
         const t = document.querySelector('.chat-row[data-pin="' + p.id + '"] .chat-row-title')
         if (t) { t.textContent = name; t.title = p.url }

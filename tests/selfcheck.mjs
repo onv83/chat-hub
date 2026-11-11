@@ -257,6 +257,49 @@ async function checkMM(sh) {
   })()`)
   pass('бейджи: режим «только новые» (дельты от базы), backlog не светится', delta && delta.hasBase && delta.backlogShown === 0, delta)
 
+  // счётчик всегда на выделенном месте: левее даты/времени, в первой строке
+  const badgePlace = await ev(sh, `(() => {
+    const bad = []
+    for (const row of document.querySelectorAll('.chat-list .chat-row')) {
+      const b = row.querySelector('.row-badge')
+      const t = row.querySelector('.row-time')
+      if (!b || !t) { bad.push('нет бейджа/времени'); continue }
+      if (!b.parentElement.classList.contains('row-line1')) bad.push('бейдж не в line1')
+      if (b.nextElementSibling !== t) bad.push('бейдж не слева от времени')
+    }
+    return { bad: bad.length, примеры: bad.slice(0, 4) }
+  })()`)
+  pass('бейджи: счётчик левее даты/времени на всех строках', badgePlace && badgePlace.bad === 0, badgePlace)
+
+  // база непрочитанных должна попадать в снимок активности (иначе после рестарта пропадает)
+  const persist = await ev(sh, `(() => {
+    const id = '__selfcheck_badge__'
+    const oldC = state.unreadBaseC[id]
+    const oldM = state.unreadBaseM[id]
+    state.unreadBaseC[id] = 7
+    state.unreadBaseM[id] = 3
+    const snap = activitySnapshot()
+    const ok = snap.unreadBaseC[id] === 7 && snap.unreadBaseM[id] === 3
+    if (oldC === undefined) delete state.unreadBaseC[id]; else state.unreadBaseC[id] = oldC
+    if (oldM === undefined) delete state.unreadBaseM[id]; else state.unreadBaseM[id] = oldM
+    return { ok }
+  })()`)
+  pass('бейджи: база непрочитанных сохраняется в activity', persist && persist.ok, persist)
+
+  // прирост непрочитанных считается от базы, а не от нуля
+  const deltaFn = await ev(sh, `(() => {
+    const id = '__selfcheck_delta__'
+    const oldC = state.unreadBaseC[id]
+    const oldM = state.unreadBaseM[id]
+    state.unreadBaseC[id] = 5
+    state.unreadBaseM[id] = 1
+    const d = unreadDeltaFor(id, 9, 2)
+    if (oldC === undefined) delete state.unreadBaseC[id]; else state.unreadBaseC[id] = oldC
+    if (oldM === undefined) delete state.unreadBaseM[id]; else state.unreadBaseM[id] = oldM
+    return d
+  })()`)
+  pass('бейджи: дельта новых сообщений от сохранённой базы', deltaFn && deltaFn.dC === 4 && deltaFn.dM === 1 && deltaFn.dU === true, deltaFn)
+
   // сортировка избранного по активности (📌 всегда сверху)
   const order = await ev(sh, `(() => {
     const rows = Array.from(document.querySelectorAll('.chat-list .chat-row')).slice(0, 12)
@@ -344,7 +387,7 @@ async function checkRows(sh) {
       const uniq = [...new Set(titles)]
       if (uniq.length < 2) continue
       // один человек с двумя чатами (разные номера) — нормально: общее слово в названиях
-      const words = uniq.map(t => String(t).toLowerCase().replace(/[^а-яёa-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 4))
+      const words = uniq.map(t => String(t).toLowerCase().replace(/[^а-яёa-z0-9 ]/g, ' ').split(/\\s+/).filter(w => w.length >= 4))
       let common = false
       for (let i = 0; i < words.length && !common; i++) {
         for (let j = i + 1; j < words.length; j++) {
