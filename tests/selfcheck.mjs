@@ -446,6 +446,19 @@ async function checkRows(sh) {
     return { bad: bad.length, список: bad.slice(0, 4) }
   })()`)
   pass('MAX: превью не заменяется числом непрочитанных', maxNumeric && maxNumeric.bad === 0, maxNumeric)
+  const maxDmAuthor = await ev(sh, `(() => {
+    const pin = (state.cfg.pinned || []).find(p => p.serviceId === 'max' && (state.msgAuth || {})[p.id] && (state.msgAuth || {})[p.id].dm)
+    if (!pin) return { err: 'нет MAX-лички с выученным авторством' }
+    const row = document.createElement('div')
+    row.className = 'chat-row'
+    row.dataset.pin = pin.id
+    const el = document.createElement('div')
+    el.className = 'chat-row-preview'
+    row.appendChild(el)
+    setRowPreview(el, String(pin.title).trim() + ': тестовый текст')
+    return { text: el.textContent, html: el.innerHTML }
+  })()`)
+  pass('MAX: автор лички не срезается как дубль названия', maxDmAuthor && !maxDmAuthor.err && /:\s*тестовый текст/.test(maxDmAuthor.text), maxDmAuthor)
   // MM: у каждого закреплённого чата должно быть последнее сообщение из API
   const mmChk = await ev(sh, `(() => {
     const pins = (state.cfg.pinned || []).filter(p => /im\.astralinux\.ru/.test(String(p.url || '')))

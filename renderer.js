@@ -1077,11 +1077,14 @@ function setRowPreview(el, text) {
   const pin = rowEl ? (state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin) : null
   if (pin && pin.title) {
     const pre = String(pin.title).trim() + ': '
-    if (t.indexOf(pre) === 0) t = t.slice(pre.length)
+    const ac = (state.msgAuth || {})[pin.id]
+    // для лички MAX «Саша: текст» — это АВТОР, а не дубль названия
+    const keepAuthor = !!(ac && ac.dm)
+    if (!keepAuthor && t.indexOf(pre) === 0) t = t.slice(pre.length)
     // личка: без метки автора непонятно, кто писал — подставляем имя чата
     // (свои сообщения идут с «Вы:», их не трогаем)
     const isDMp = /#@/.test(String(pin.url || ''))
-    const hasAuth = /^[^:]{2,40}:\s?/.test(t) || /^Вы:/.test(t) || /^(https?|ftp|mailto):/i.test(t)
+    const hasAuth = /^[^:]{2,40}:\s?/.test(t) || /^Вы:/.test(t) || /^(https?|ftp|mailto):/i.test(t) || keepAuthor
     if (isDMp && t && !hasAuth) t = String(pin.title).trim() + ': ' + t
   }
   if (el.dataset.txt === t) return
