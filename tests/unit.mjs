@@ -212,3 +212,19 @@ test('shouldAutoRenameTitle: пользовательское название T
   assert.equal(c.shouldAutoRenameTitle('tg', 'Astra lin', 'https://web.telegram.org/k/#@Astra_lin'), true)
   assert.equal(c.shouldAutoRenameTitle('mm', 'Любое', 'https://im.astralinux.ru/astralinux/channels/x'), true)
 })
+
+// ---------- formatMaxPreview ----------
+test('formatMaxPreview: отдельный span.author становится префиксом', () => {
+  const c = sandbox(['formatMaxPreview'])
+  assert.equal(c.formatMaxPreview('Илья М:   привет всем', 'Илья М:'), 'Илья М: привет всем')
+})
+
+test('formatMaxPreview: автор вшит в текст — нормализуется', () => {
+  const c = sandbox(['formatMaxPreview'])
+  assert.equal(c.formatMaxPreview('Любовь:   Здравствуйте', ''), 'Любовь: Здравствуйте')
+})
+
+test('formatMaxPreview: URL не считается автором', () => {
+  const c = sandbox(['formatMaxPreview'])
+  assert.equal(c.formatMaxPreview('https://example.com/page', ''), 'https://example.com/page')
+})
