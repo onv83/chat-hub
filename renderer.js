@@ -586,10 +586,11 @@ function buildSection(id, deferSrc) {
     // Календарь/Заметки) — скрываем и в сервисной вкладке, и в пин-вьюхах
     // (в пин-вьюхах ещё и через columnCss — там лишняя полоса слева вдвойне мешает)
     if (svc.id === 'ydx') { try { wv.insertCSS('[class^="GlobalBarRoot"]{display:none !important}') } catch (e) {} }
-    // MAX: прячем navigation; .app растягиваем на всю ширину БЕЗ фиксированного
-    // сдвига (-77px при сужении уводил чат за левый край). Grid-сетку на >=950px
-    // MAX пересчитывает сам — не трогаем, пустой трек 77px там допустим.
-    if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app{margin:0 !important; width:100% !important; max-width:none !important; min-width:0 !important; box-sizing:border-box !important}') } catch (e) {} }
+    // MAX (основная вкладка): прячем navigation; на >=950px CSS-сетка MAX держит
+    // пустую колонку 77px — закрываем её сдвигом ТОЛЬКО на этой ширине (медиа),
+    // ниже 950px колонки нет и сдвиг не нужен (фиксированный -77px на узком окне
+    // уводил содержимое за левый край). insertCSS (стили-лист) MAX-JS не перебивает.
+    if (svc.id === 'max') { try { wv.insertCSS('.app > .navigation{display:none !important} .app{margin:0 !important; width:100% !important; max-width:none !important; min-width:0 !important; box-sizing:border-box !important} @media (min-width:950px){.app{margin-left:-77px !important; width:calc(100% + 77px) !important}}') } catch (e) {} }
   })
 
   const menuBtn = bar.querySelector('.open-fav-menu')
