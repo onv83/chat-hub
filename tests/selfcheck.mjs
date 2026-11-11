@@ -239,23 +239,30 @@ async function checkMM(sh) {
   pass('ММ: счётчики каналов из API доходят до шелла', bd && bd.withApi > 0, bd && { pins: bd.withApi })
   pass('ММ: число новых сообщений рисуется в строке у пина/✕', bd && bd.shown && bd.shown.text === '7' && bd.shown.hidden === false, bd && bd.shown)
 
-  // режим «только новые»: дельты от базового запаса + чистота строк на старте
-  const delta = await ev(sh, `(() => {
+  // фактические непрочитанные: число в строке = текущий запас, а не дельта
+  const delta = await ev(sh, `(async () => {
+    await pollUnread()
     const hasBase = !!(state.unreadBaseC && Object.keys(state.unreadBaseC).length)
-    let backlogShown = 0
+    let mismatch = 0
+    const examples = []
     document.querySelectorAll('.chat-row').forEach(row => {
       const b = row.querySelector('.row-badge')
-      if (b && !b.classList.contains('hidden') && /^\\d+$/.test(b.textContent) && Number(b.textContent) > 0) {
-        // число в строке допустимо только как «новое» — проверим, что это дельта
-        const pid = row.dataset.pin
-        const tot = state.unreadTotals && state.unreadTotals[pid]
-        const baseC = state.unreadBaseC && state.unreadBaseC[pid]
-        if (tot && baseC !== undefined && Number(b.textContent) !== Math.max(0, tot.c - baseC)) backlogShown++
+      const pid = row.dataset.pin
+      const tot = state.unreadTotals && state.unreadTotals[pid]
+      if (!tot || !b) return
+      const expected = (tot.m || 0) > 0 ? '@' + tot.m : ((tot.c || 0) > 0 ? String(tot.c) : '')
+      if (expected && (b.classList.contains('hidden') || b.textContent !== expected)) {
+        mismatch++
+        if (examples.length < 4) examples.push({ pid, expected, actual: b.textContent, hidden: b.classList.contains('hidden') })
+      }
+      if (!expected && b.textContent && b.textContent !== '•') {
+        mismatch++
+        if (examples.length < 4) examples.push({ pid, expected: '', actual: b.textContent })
       }
     })
-    return { hasBase, backlogShown }
+    return { hasBase, mismatch, examples }
   })()`)
-  pass('бейджи: режим «только новые» (дельты от базы), backlog не светится', delta && delta.hasBase && delta.backlogShown === 0, delta)
+  pass('бейджи: фактические непрочитанные видны красным счётчиком', delta && delta.hasBase && delta.mismatch === 0, delta)
 
   // счётчик всегда на выделенном месте: левее даты/времени, в первой строке
   const badgePlace = await ev(sh, `(() => {
