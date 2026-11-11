@@ -93,6 +93,17 @@ function __chatHubGrabAvatar(el) {
       //    достаточно крупный
       const imgs = Array.from(el.querySelectorAll('img'))
       let img = imgs.find(i => /avatar|photo|userpic/i.test(String(i.className))) || imgs.find(i => i.naturalWidth >= 24)
+      // webk лениво грузит аватарки: сразу после прокрутки img ещё пуст —
+      // ждём загрузку, иначе нижние чаты оставались без фото
+      if (img && !img.complete) {
+        await new Promise(res => {
+          let done = false
+          const fin = () => { if (!done) { done = true; res() } }
+          img.addEventListener('load', fin)
+          img.addEventListener('error', fin)
+          setTimeout(fin, 900)
+        })
+      }
       if (!img || !img.src) {
         const bgEl = el.querySelector('.dialog-avatar, .UserPic, .Orb-UserPic, .avatar, [class*="avatar"]')
         if (bgEl) {
@@ -2272,7 +2283,7 @@ async function mmLastPosts() {
               const purl = "/api/v4/channels/" + ch.id + "/posts?per_page=1";
               const pp = await fetch(purl, { headers: H }).then(r => r.json());
               const post = pp && pp.posts && pp.order && pp.order.length ? pp.posts[pp.order[0]] : null;
-              if (post && post.message) {
+              if (post) { if (!post.message && Array.isArray(post.file_ids) && post.file_ids.length) post.message = '[вложение]'; if (post.message) {
                 let uname = "";
                 try {
                   const uid = post.user_id;
@@ -2285,7 +2296,7 @@ async function mmLastPosts() {
                   }
                 } catch (e) {}
                 prev = (uname ? uname + ": " : "") + String(post.message).split(String.fromCharCode(13)).join(" ").split(String.fromCharCode(10)).join(" ").split("**").join("").slice(0, 90)
-              }
+              } }
             } catch (e) {}
             res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });
           }
@@ -2311,18 +2322,7 @@ async function mmLastPosts() {
         pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : '')) + ac.text
       }
       state.lastMsgPreview[r.id] = pv
-      if (svc.id === 'tg' && state.pinViews && state.pinViews[r.id]) {
-        try {
-          const lb = await grabViewLastMsg(state.pinViews[r.id], r.url)
-          if (lb && lb.text) {
-            let pre = lb.text
-            const pinG = state.cfg.pinned.find(p => p.id === r.id)
-            // текст, начинающийся с названия чата, — дубль (название уже строкой выше)
-            if (pinG && pinG.title && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
-            state.lastMsgPreview[r.id] = (lb.out ? 'Вы: ' : ((lb.name || (pinG && pinG.title) || '') + ': ')) + pre
-          }
-        } catch (e) {}
-      } }
+      }
     }
   } catch (e) {}
 }
