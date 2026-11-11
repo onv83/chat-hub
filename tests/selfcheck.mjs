@@ -258,6 +258,47 @@ async function checkMM(sh) {
   pass('избранное: сортировка по активности (без 📌) не нарушена', order && order.bad === 0, order)
 }
 
+async function checkRows(sh) {
+  const r = await ev(sh, `(() => {
+    const rows = [...document.querySelectorAll('.chat-list .chat-row')].slice(0, 8)
+    if (!rows.length) return { err: 'нет строк' }
+    const out = { total: rows.length, bad: [] }
+    for (const row of rows) {
+      const title = (row.querySelector('.chat-row-title') || {}).textContent || ''
+      const time = (row.querySelector('.row-time') || {}).textContent || ''
+      const src = (row.querySelector('.chat-row-src') || {}).textContent || ''
+      const prevEl = row.querySelector('.chat-row-preview')
+      const prev = prevEl ? prevEl.innerHTML : ''
+      const av = row.querySelector('.row-avatar')
+      const ab = av ? av.getBoundingClientRect() : { width: 0 }
+      const timeOk = /^\d{1,2}:\d{2}$/.test(time) || time === 'вчера' || /^\d{2}\.\d{2}(\.\d{2})?$/.test(time)
+      if (!title) out.bad.push('нет названия')
+      if (!timeOk && time !== '') out.bad.push('время: ' + time)
+      if (!src) out.bad.push('нет источника')
+      if (!av) out.bad.push('нет слота аватара')
+      else if (Math.round(ab.width) < 40) out.bad.push('аватар мал: ' + Math.round(ab.width))
+      if (prevEl && prev && prev.includes(':') && !/<b>/.test(prev)) out.bad.push('автор не жирным')
+    }
+    // меню: ⋮ скрыт без наведения, открывается вправо, закрывается blur
+    const row = rows[0]
+    const more = row.querySelector('.row-more')
+    const menu = row.querySelector('.row-menu')
+    const hiddenByDefault = more ? getComputedStyle(more).opacity === '0' : false
+    let opensRight = false, menuItems = 0, closedOnBlur = false
+    if (more && menu) {
+      more.click()
+      const mr = menu.getBoundingClientRect()
+      opensRight = mr.left >= row.getBoundingClientRect().right - 6
+      menuItems = menu.querySelectorAll('button').length
+      window.dispatchEvent(new Event('blur'))
+      closedOnBlur = menu.classList.contains('hidden')
+    }
+    return { ...out, hiddenByDefault, opensRight, menuItems, closedOnBlur }
+  })()`)
+  pass('строки: название/время(формат)/источник/аватар 40px+', r && !r.err && r.bad.length === 0, r && (r.bad || r.err))
+  pass('строки: ⋮ скрыт без наведения, меню вправо (2 пункта), закрывается кликом в чат', r && r.hiddenByDefault && r.opensRight && r.menuItems === 2 && r.closedOnBlur, r && { hiddenByDefault: r.hiddenByDefault, opensRight: r.opensRight, menuItems: r.menuItems, closedOnBlur: r.closedOnBlur })
+}
+
 async function widthsCheck(sh, kind, viewRe, measureExpr, name) {
   const pinId = await selectPin(sh, kind)
   if (!pinId) { pass(name + ': пин в избранном существует', false); return }
@@ -308,6 +349,7 @@ async function main() {
   const sh = await connect(l0.find(t => t.type === 'page').webSocketDebuggerUrl)
 
   await checkShell(sh)
+  await checkRows(sh)
   await checkMM(sh)
 
   // TG

@@ -2051,9 +2051,36 @@ async function mmTabCounts() {
   const now = Date.now()
   if (state.mmTabCountsAt && now - state.mmTabCountsAt < 30000) return
   // API зовём из СЕРВИСНОЙ вкладки: первые пин-вьюхи могут быть «скелетом»
-  // (пустое тело) и на /api/v4 отдают HTML вместо JSON
   const wv = state.svcViews['mm'] || svcViewFor('mm')
   if (!wv || !wv.executeJavaScript) return
+  try {
+    const out = await wv.executeJavaScript(`(async () => {
+      try {
+        const r = await fetch("/api/v4/users/me/teams/unread", { headers: { "X-Requested-With": "XMLHttpRequest" } }).then(x => x.json());
+        if (!Array.isArray(r) || !r.length) return "";
+        let t = 0, m = 0;
+        for (const u of r) { t += Number(u.msg_count) || 0; m += Number(u.mention_count) || 0 }
+        return JSON.stringify({ t, m });
+      } catch (e) { return "" }
+    })()`)
+    if (!out) return
+    state.mmTabCountsAt = now
+    const c = JSON.parse(out)
+    if (typeof c.t === 'number') {
+      state.svcTabTotals = state.svcTabTotals || {}
+      state.svcTabTotals.mm = { t: c.t, m: c.m }
+      updateBadge2('mm', c.t, c.m)
+    }
+  } catch {}
+}
+
+async function mmLastPosts() {
+  const now = Date.now()
+  if (state.mmChannelsAt && now - state.mmChannelsAt < 30000) return
+  const wv = state.svcViews['mm'] || svcViewFor('mm')
+  if (!wv) return
+  const mmFavs = favoritesOf('mm')
+  if (!mmFavs.length) return
   try {
     const out = await wv.executeJavaScript(`(async () => {
       const H = { "X-Requested-With": "XMLHttpRequest" };
@@ -2120,8 +2147,6 @@ async function mmTabCounts() {
         state.lastMsgAt[r.id] = r.at
         state.lastMsgText[r.id] = fmtChatWhen(r.at, false)
       }
-      // непрочитанные из API (ChannelMember.msg_count/mention_count): в строке
-      // избранного — число новых сообщений канала, а не только @упоминания
       state.mmPinCounts = state.mmPinCounts || {}
       state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
       if (r.preview) state.lastMsgPreview[r.id] = r.preview
