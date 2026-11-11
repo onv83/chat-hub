@@ -313,7 +313,12 @@ async function checkMM(sh) {
     }
     return out
   })()`)
-  const coverageOk = coverage && Object.values(coverage).every(x => x.pins === 0 || (x.withTotals === x.pins && x.withBase === x.pins))
+  const coverageOk = coverage && Object.entries(coverage).every(([id, x]) => {
+    if (x.pins === 0) return true
+    // TG виртуализирует список: totals появляются по мере свипа, база обязана быть у всех
+    if (id === 'tg') return x.withBase === x.pins && x.withTotals > 0
+    return x.withTotals === x.pins && x.withBase === x.pins
+  })
   pass('бейджи: единый модуль покрывает MM/TG/MAX/Телемост', coverageOk, coverage)
 
   // сортировка избранного по активности (📌 всегда сверху)
@@ -417,6 +422,17 @@ async function checkRows(sh) {
   pass('строки: аватары не дублируются между чатами', dupCheck && dupCheck.дубли === 0, dupCheck)
   const fill = await ev(sh, `(() => { const rows = [...document.querySelectorAll('.chat-list .chat-row')]; let f = 0; for (const r2 of rows) { const pv = (r2.querySelector('.chat-row-preview') || {}).textContent || ''; if (pv.trim()) f++ } return { заполнено: f, всего: rows.length } })()`)
   pass('строки: заполнение превью (метрика)', true, fill)
+  // MAX: у групп автор берётся из span.author/текста; лички доучиваются из пузырей
+  const maxAuth = await ev(sh, `(() => {
+    const rows = [...document.querySelectorAll('.chat-list .chat-row')].filter(r => (r.querySelector('.chat-row-src') || {}).textContent === 'MAX')
+    const withPreview = rows.filter(r => ((r.querySelector('.chat-row-preview') || {}).textContent || '').trim())
+    const withAuthor = withPreview.filter(r => {
+      const t = (r.querySelector('.chat-row-preview') || {}).textContent || ''
+      return t.indexOf(':') > 0 && !/^(https?|ftp|mailto):/i.test(t)
+    })
+    return { max: rows.length, withPreview: withPreview.length, withAuthor: withAuthor.length }
+  })()`)
+  pass('MAX: превью содержит автора (группы/лички по мере выучивания)', maxAuth && maxAuth.withAuthor > 0, maxAuth)
   // MM: у каждого закреплённого чата должно быть последнее сообщение из API
   const mmChk = await ev(sh, `(() => {
     const pins = (state.cfg.pinned || []).filter(p => /im\.astralinux\.ru/.test(String(p.url || '')))

@@ -192,7 +192,9 @@ async function init() {
   // Универсальное выучивание авторства: каждая личка без известного автора
   // один раз открывается в скрытой пин-вьюхе, читается последний пузырь
   // (is-out → «Вы:»), результат запоминается навсегда (msgAuth в конфиге).
-  setInterval(() => learnAuthorSweep().catch(() => {}), 8000)
+  // Автооткрытие чатов для выучивания авторства ОТКЛЮЧЕНО: скрытая вьюха
+  // тоже может отметить чат прочитанным. Учимся только на уже открытых вьюхах.
+  // setInterval(() => learnAuthorSweep().catch(() => {}), 8000)
   // TG-вкладка после старта иногда остаётся пустым скелетом: webk грузится,
   // но не гидрируется, и reload() это не лечит. Свежесозданный webview с тем
   // же адресом рендерится корректно, поэтому при пустом списке диалогов
@@ -316,8 +318,8 @@ function ensureKeys(cfg) {
       const ac = (state.msgAuth || {})[k]
       if (ac && ac.text) {
         const pinA0 = state.cfg.pinned.find(p => p.id === k)
-        const isDMx = pinA0 && /#@/.test(String(pinA0.url || ''))
-        state.lastMsgPreview[k] = (ac.out ? 'Вы: ' : (!isDMx && ac.name ? ac.name + ': ' : '')) + ac.text
+        const isDMx = pinA0 && (/#@/.test(String(pinA0.url || '')) || ac.dm)
+        state.lastMsgPreview[k] = (ac.out ? 'Вы: ' : (!isDMx && ac.name ? ac.name + ': ' : (isDMx && pinA0.title ? pinA0.title + ': ' : ''))) + ac.text
         continue
       }
       const pv = String(state.lastMsgPreview[k] || '')
@@ -913,8 +915,12 @@ function renderChatList() {
 
   // webview НА КАЖДЫЙ чат из избранного: предзагружаем только ВЕРХНИЕ чаты
   // списка (приоритет/свежие) — остальные создаются и грузятся по клику
-  // (selectChat): иначе 60+ процессов мессенджеров съедают всю оперативку
-  for (const p of favs.slice(0, maxLiveViews())) ensurePinView(p)
+  // (selectChat): иначе 60+ процессов мессенджеров съедают всю оперативку.
+  // TG/MAX в фоне НЕ открываем: открытие чата может снять непрочитанное.
+  for (const p of favs.slice(0, maxLiveViews())) {
+    if (p.serviceId === 'tg' || p.serviceId === 'max') continue
+    ensurePinView(p)
+  }
   // вьюхи чатов, которых больше нет в избранном, — убираем
   const alive = new Set(favs.map(p => p.id))
   for (const [pid, v] of Object.entries(state.pinViews)) {
@@ -1941,7 +1947,7 @@ async function pollUnread() {
         // обёрткой в области видимости сериализованного экстрактора.
         state.pinAvatars = state.pinAvatars || {}
         const out = await cand.executeJavaScript(
-          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id], needUnread: svc.id === 'tg' && (!state.unreadTotals[f.id] || Date.now() - ((state.unreadTotalsAt || {})[f.id] || 0) > 30000) }))) + ',' + JSON.stringify(allowScroll) + ') })()'
+          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; const formatMaxPreview = ' + formatMaxPreview.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id], needUnread: svc.id === 'tg' && (!state.unreadTotals[f.id] || Date.now() - ((state.unreadTotalsAt || {})[f.id] || 0) > 30000) }))) + ',' + JSON.stringify(allowScroll) + ') })()'
         )
         const r = JSON.parse(out)
         // TG: запоминаем сопоставление пин → числовой peer-id (после первого
@@ -2076,8 +2082,8 @@ async function pollUnread() {
       if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2)
       const ac = (state.msgAuth || {})[r.id]
       if (ac && ac.text && pv.indexOf(ac.text) >= 0) {
-        const isDMc = pinA && /#@/.test(String(pinA.url || ''))
-        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : '')) + ac.text
+        const isDMc = pinA && (/#@/.test(String(pinA.url || '')) || ac.dm)
+        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : (isDMc && pinA.title ? pinA.title + ': ' : ''))) + ac.text
       }
       state.lastMsgPreview[r.id] = pv
       if (svc.id === 'tg' && state.pinViews && state.pinViews[r.id]) {
@@ -2105,6 +2111,25 @@ async function pollUnread() {
           }
         } catch (e) {}
       } }
+      if (svc.id === 'max' && state.pinViews && state.pinViews[r.id]) {
+        try {
+          const lb = await grabViewLastMsgMax(state.pinViews[r.id], r.url)
+          if (lb && lb.text) {
+            let pre = lb.text
+            const pinG = state.cfg.pinned.find(p => p.id === r.id)
+            if (pinG && pinG.title && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
+            state.msgAuth = state.msgAuth || {}
+            state.msgAuth[r.id] = { text: pre, out: lb.out, name: lb.name, dm: lb.dm }
+            state.cfg.activity = state.cfg.activity || {}
+            state.cfg.activity.msgAuth = state.msgAuth
+            if (!state.msgAuthSaveAt || Date.now() - state.msgAuthSaveAt > 10000) {
+              state.msgAuthSaveAt = Date.now()
+              try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
+            }
+            state.lastMsgPreview[r.id] = (lb.out ? 'Вы: ' : (lb.dm && pinG && pinG.title ? pinG.title + ': ' : (lb.name ? lb.name + ': ' : ''))) + pre
+          }
+        } catch (e) {}
+      }
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       state.__prevLastMsgAt = state.__prevLastMsgAt || {}
@@ -2377,8 +2402,8 @@ async function mmLastPosts() {
       if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2)
       const ac = (state.msgAuth || {})[r.id]
       if (ac && ac.text && pv.indexOf(ac.text) >= 0) {
-        const isDMc = pinA && /#@/.test(String(pinA.url || ''))
-        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : '')) + ac.text
+        const isDMc = pinA && (/#@/.test(String(pinA.url || '')) || ac.dm)
+        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : (isDMc && pinA.title ? pinA.title + ': ' : ''))) + ac.text
       }
       state.lastMsgPreview[r.id] = pv
       }
@@ -2513,6 +2538,36 @@ async function grabViewLastMsg(wv, pinUrl) {
   } catch (e) { return null }
 }
 
+// MAX: последнее сообщение в открытом чате. У пузырей есть
+// data-bubbles-variant="incoming|outgoing" — outgoing = писал пользователь.
+async function grabViewLastMsgMax(wv, pinUrl) {
+  const id = (String(pinUrl || '').match(/\/(\d+)(?:[/?#]|$)/) || [])[1] || ''
+  if (!id) return null
+  try {
+    return await wv.executeJavaScript(`(() => {
+      const id = ${JSON.stringify(id)}
+      if (!String(location.href || '').includes('/' + id)) return null
+      const msgs = [...document.querySelectorAll('.message')]
+      const m = msgs[msgs.length - 1]
+      if (!m) return null
+      const variantEl = m.querySelector('[data-bubbles-variant]')
+      const variant = variantEl ? variantEl.getAttribute('data-bubbles-variant') : ''
+      const out = variant === 'outgoing'
+      const nameEl = m.querySelector('.author')
+      const name = nameEl ? String(nameEl.textContent || '').trim().replace(/:$/, '').slice(0, 40) : ''
+      let tx = ''
+      const textEl = m.querySelector('[data-message-markup], .bubbleContent .text')
+      if (textEl) {
+        const cl = textEl.cloneNode(true)
+        cl.querySelectorAll('.meta, .time, .reactions').forEach(x => x.remove())
+        tx = String(cl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+      }
+      if (!tx) return null
+      return { out: out, name: name, text: tx, dm: !out && !name }
+    })()`)
+  } catch (e) { return null }
+}
+
 // Фоновый обход: учим авторство последних сообщений в личках (и группах) —
 // один раз на чат, дальше из msgAuth. Не трогает открытые пользователем вьюхи
 // больше LRU-лимита (trimPinViews) и не печатает ничего в мессенджеры.
@@ -2520,25 +2575,21 @@ async function learnAuthorSweep() {
   if (state.learnBusy) return
   state.learnBusy = true
   try {
-    const pins = (state.cfg.pinned || []).filter(p => /web\.telegram\.org/.test(String(p.url || '')))
-    const need = pins.filter(p => !(state.msgAuth || {})[p.id] && (state.lastMsgPreview || {})[p.id])
+    const pins = (state.cfg.pinned || []).filter(p => /web\.telegram\.org|web\.max\.ru/.test(String(p.url || '')))
+    const need = pins.filter(p => !(state.msgAuth || {})[p.id] && (state.lastMsgPreview || {})[p.id] && (state.pinViews || {})[p.id])
     const batch = need.slice(0, 4)
     for (const pin of batch) {
       try {
-        const haveView = !!(state.pinViews || {})[pin.id]
-        let pv = haveView ? state.pinViews[pin.id] : null
-        if (!haveView) {
-          pv = ensurePinView(pin)
-          await new Promise(z => setTimeout(z, 1200))
-        }
+        const pv = state.pinViews[pin.id]
         if (!pv) continue
-        const lb = await grabViewLastMsg(pv, pin.url)
+        const isMax = /web\.max\.ru/.test(String(pin.url || ''))
+        const lb = isMax ? await grabViewLastMsgMax(pv, pin.url) : await grabViewLastMsg(pv, pin.url)
         if (!lb || !lb.text) continue
         let pre = lb.text
         if (pre.indexOf(String(pin.title) + ': ') === 0) pre = pre.slice(String(pin.title).length + 2)
         state.msgAuth = state.msgAuth || {}
-        state.msgAuth[pin.id] = { text: pre, out: lb.out, name: lb.name }
-        state.lastMsgPreview[pin.id] = (lb.out ? 'Вы: ' : '') + pre
+        state.msgAuth[pin.id] = { text: pre, out: lb.out, name: lb.name, dm: lb.dm }
+        state.lastMsgPreview[pin.id] = (lb.out ? 'Вы: ' : (lb.dm && pin.title ? pin.title + ': ' : (lb.name ? lb.name + ': ' : ''))) + pre
         const row = document.querySelector('.chat-row[data-pin="' + pin.id + '"]')
         if (row) setRowPreview(row.querySelector('.chat-row-preview'), state.lastMsgPreview[pin.id])
         scheduleActSave()
@@ -2846,6 +2897,20 @@ async function __chatHubTgUnread(favs, allowScroll) {
 // MAX: строка чата по названию (span.name — НЕ span.text, это текст последнего
 // сообщения), число в строке = непрочитанные (упоминаний не видно).
 // Позиция строки = активность: список MAX отсортирован по свежести.
+function formatMaxPreview(text, author) {
+  let preview = String(text || '').replace(/\s+/g, ' ').trim()
+  const authorRaw = String(author || '').trim().replace(/:$/, '')
+  if (authorRaw && preview) {
+    const a1 = authorRaw + ':'
+    if (preview.indexOf(a1) === 0) preview = preview.slice(a1.length).trim()
+    else if (preview.indexOf(authorRaw) === 0) preview = preview.slice(authorRaw.length).trim()
+    return authorRaw + ': ' + preview.replace(/^\s+/, '')
+  }
+  const am = preview.match(/^([^:]{2,40}):\s+/)
+  if (am && !/^(https?|ftp|mailto)$/i.test(am[1])) return am[1] + ': ' + preview.slice(am[0].length).trim()
+  return preview
+}
+
 async function __chatHubMaxUnread(favs) {
   const out = []
   const items = Array.from(document.querySelectorAll('aside div.item'))
@@ -2871,8 +2936,14 @@ async function __chatHubMaxUnread(favs) {
       }
       if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    const textSpans = idx >= 0 ? Array.from(items[idx].querySelectorAll('span.text')) : []; const prevEl = textSpans.find(t => String(t.textContent || '').trim() !== (idx >= 0 ? nameOf(items[idx]) : '')) || null
-    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: prevEl ? String(prevEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
+    const textSpans = idx >= 0 ? Array.from(items[idx].querySelectorAll('span.text')) : []
+    const prevEl = textSpans.find(t => String(t.textContent || '').trim() !== (idx >= 0 ? nameOf(items[idx]) : '')) || null
+    let preview = prevEl ? String(prevEl.textContent || '') : ''
+    // MAX: у групп есть отдельный span.author («Илья М:»), у части строк
+    // автор вшит в начало текста. Формируем единое «Автор: текст».
+    const authorEl = idx >= 0 ? items[idx].querySelector('span.author') : null
+    preview = formatMaxPreview(preview, authorEl ? authorEl.textContent : '')
+    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: preview.slice(0, 110) })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
   // Маркеров упоминаний список MAX не показывает — только общее число.
