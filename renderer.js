@@ -919,6 +919,13 @@ function selectChat(pinId) {
   const svc = state.cfg.services.find(s => s.id === p.serviceId)
   if (!svc) return
   state.cfg.selectedPinId = pinId
+  // открыл чат → его «новые» обнуляются: базой становится текущий запас
+  if (state.unreadTotals && state.unreadTotals[pinId]) {
+    state.unreadBaseC = state.unreadBaseC || {}
+    state.unreadBaseM = state.unreadBaseM || {}
+    state.unreadBaseC[pinId] = state.unreadTotals[pinId].c || 0
+    state.unreadBaseM[pinId] = state.unreadTotals[pinId].m || 0
+  }
   window.hub.saveConfig(state.cfg)
   document.querySelectorAll('.chat-row').forEach(r => r.classList.toggle('selected', r.dataset.pin === pinId))
   // открытие чата: если вьюха ещё не создана (за пределами топа списка) —
@@ -1752,8 +1759,22 @@ async function pollUnread() {
         if (mp.count > 0) { r.count = mp.count; r.unread = true }
         if (mp.mentions > 0) { r.mentions = mp.mentions; r.unread = true }
       }
+      // «ТОЛЬКО НОВЫЕ»: старый запас непрочитанных на старте скрываем — в строке
+      // показываем ПРИРОСТ с первого замера (или с открытия чата). Так в бейджах
+      // видны только реально новые сообщения, а не накопленный backlog.
+      state.unreadBaseC = state.unreadBaseC || {}
+      state.unreadBaseM = state.unreadBaseM || {}
+      state.unreadTotals = state.unreadTotals || {}
+      state.unreadTotals[r.id] = { c: r.count || 0, m: r.mentions || 0 }
+      if (state.unreadBaseC[r.id] === undefined) {
+        state.unreadBaseC[r.id] = r.count || 0
+        state.unreadBaseM[r.id] = r.mentions || 0
+      }
+      const dC = Math.max(0, (r.count || 0) - state.unreadBaseC[r.id])
+      const dM = Math.max(0, (r.mentions || 0) - state.unreadBaseM[r.id])
+      const dU = dC > 0 || dM > 0
       const row = document.querySelector('.chat-row[data-pin="' + r.id + '"]')
-      if (row) setRowBadge(row, r)
+      if (row) setRowBadge(row, { count: dC, mentions: dM, unread: dU })
       // аватарка чата, пойманная экстрактором → кэш и в строку (до
       // следующего рестарта; монограмма-заглушка остаётся, если не поймали)
       if (r.avatar && !state.pinAvatars[r.id]) {
@@ -1765,8 +1786,8 @@ async function pollUnread() {
       if (r.unread) unreadChats++
       // Сборная — только избранное: всего непрочитанных + упоминания;
       // «точка без числа» (unread без count/mentions) считаем как 1
-      favSumT += (r.count || 0) + (r.unread && !(r.count > 0) && !(r.mentions > 0) ? 1 : 0)
-      favSumM += r.mentions || 0
+      favSumT += dC + (dU && dC === 0 && dM === 0 ? 1 : 0)
+      favSumM += dM
       // активность для сортировки: позиция строки в списке мессенджера
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999

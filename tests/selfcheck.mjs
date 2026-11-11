@@ -201,6 +201,34 @@ async function checkMM(sh) {
   })()`)
   pass('ММ: счётчики каналов из API доходят до шелла', bd && bd.withApi > 0, bd && { pins: bd.withApi })
   pass('ММ: число новых сообщений рисуется в строке у пина/✕', bd && bd.shown && bd.shown.text === '7' && bd.shown.hidden === false, bd && bd.shown)
+
+  // режим «только новые»: дельты от базового запаса + чистота строк на старте
+  const delta = await ev(sh, `(() => {
+    const hasBase = !!(state.unreadBaseC && Object.keys(state.unreadBaseC).length)
+    let backlogShown = 0
+    document.querySelectorAll('.chat-row').forEach(row => {
+      const b = row.querySelector('.row-badge')
+      if (b && !b.classList.contains('hidden') && /^\\d+$/.test(b.textContent) && Number(b.textContent) > 0) {
+        // число в строке допустимо только как «новое» — проверим, что это дельта
+        const pid = row.dataset.pin
+        const tot = state.unreadTotals && state.unreadTotals[pid]
+        const baseC = state.unreadBaseC && state.unreadBaseC[pid]
+        if (tot && baseC !== undefined && Number(b.textContent) !== Math.max(0, tot.c - baseC)) backlogShown++
+      }
+    })
+    return { hasBase, backlogShown }
+  })()`)
+  pass('бейджи: режим «только новые» (дельты от базы), backlog не светится', delta && delta.hasBase && delta.backlogShown === 0, delta)
+
+  // сортировка избранного по активности (📌 всегда сверху)
+  const order = await ev(sh, `(() => {
+    const rows = Array.from(document.querySelectorAll('.chat-list .chat-row')).slice(0, 12)
+    const seq = rows.map(row => { const p = state.cfg.pinned.find(x => x.id === row.dataset.pin); return { pr: p && p.priority ? 1 : 0, act: Math.max(state.lastMsgAt[row.dataset.pin] || 0, state.liveAct[row.dataset.pin] || 0) } })
+    let bad = 0
+    for (let i = 1; i < seq.length; i++) if (seq[i].pr === 0 && seq[i-1].pr === 0 && seq[i].act > seq[i-1].act + 1000) bad++
+    return { bad, n: seq.length }
+  })()`)
+  pass('избранное: сортировка по активности (без 📌) не нарушена', order && order.bad === 0, order)
 }
 
 async function widthsCheck(sh, kind, viewRe, measureExpr, name) {
