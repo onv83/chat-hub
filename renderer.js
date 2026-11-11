@@ -185,6 +185,10 @@ async function init() {
   ;['keydown', 'mousedown', 'wheel'].forEach(ev =>
     document.addEventListener(ev, () => { state.lastUserInput = Date.now() }, { passive: true, capture: true }))
   setInterval(() => pollUnread().catch(() => {}), 5000)
+  // Универсальное выучивание авторства: каждая личка без известного автора
+  // один раз открывается в скрытой пин-вьюхе, читается последний пузырь
+  // (is-out → «Вы:»), результат запоминается навсегда (msgAuth в конфиге).
+  setInterval(() => learnAuthorSweep().catch(() => {}), 12000)
   // TG-вкладка после старта иногда остаётся пустым скелетом: webk грузится,
   // но не гидрируется, и reload() это не лечит. Свежесозданный webview с тем
   // же адресом рендерится корректно, поэтому при пустом списке диалогов
@@ -2436,6 +2440,37 @@ async function grabViewLastMsg(wv, pinUrl) {
       return { out: out, name: nm ? String(nm.textContent || '').trim().slice(0, 40) : '', text: tx }
     })()`)
   } catch (e) { return null }
+}
+
+// Фоновый обход: учим авторство последних сообщений в личках (и группах) —
+// один раз на чат, дальше из msgAuth. Не трогает открытые пользователем вьюхи
+// больше LRU-лимита (trimPinViews) и не печатает ничего в мессенджеры.
+async function learnAuthorSweep() {
+  if (state.learnBusy) return
+  state.learnBusy = true
+  try {
+    const pins = (state.cfg.pinned || []).filter(p => /web\.telegram\.org/.test(String(p.url || '')))
+    const need = pins.filter(p => !(state.msgAuth || {})[p.id] && !(state.pinViews || {})[p.id] && (state.lastMsgPreview || {})[p.id])
+    const batch = need.slice(0, 2)
+    for (const pin of batch) {
+      try {
+        await ensurePinView(pin)
+        await new Promise(z => setTimeout(z, 1600))
+        const pv = (state.pinViews || {})[pin.id]
+        if (!pv) continue
+        const lb = await grabViewLastMsg(pv, pin.url)
+        if (!lb || !lb.text) continue
+        let pre = lb.text
+        if (pre.indexOf(String(pin.title) + ': ') === 0) pre = pre.slice(String(pin.title).length + 2)
+        state.msgAuth = state.msgAuth || {}
+        state.msgAuth[pin.id] = { text: pre, out: lb.out, name: lb.name }
+        state.lastMsgPreview[pin.id] = (lb.out ? 'Вы: ' : '') + pre
+        const row = document.querySelector('.chat-row[data-pin="' + pin.id + '"]')
+        if (row) setRowPreview(row.querySelector('.chat-row-preview'), state.lastMsgPreview[pin.id])
+        scheduleActSave()
+      } catch (e) {}
+    }
+  } finally { state.learnBusy = false }
 }
 
 function setRowAvatar(row, dataUrl) {
