@@ -8,6 +8,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "start": "electron .",
+    "test": "node --test tests/unit.mjs",
     "selfcheck": "node tests/selfcheck.mjs"
   },
   "devDependencies": {
