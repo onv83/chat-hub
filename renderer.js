@@ -302,8 +302,16 @@ function ensureKeys(cfg) {
     merge(state.lastMsgAt, A.lastMsgAt)
     merge(state.lastMsgText, A.lastMsgText)
     merge(state.lastMsgPreview, A.lastMsgPreview)
-    // восстановленные превью нормализуем: без автора — дописываем имя чата
+    merge(state.msgAuth, A.msgAuth)
+    // восстановленные превью нормализуем: авторство из чатов важнее списка
     for (const k of Object.keys(state.lastMsgPreview)) {
+      const ac = (state.msgAuth || {})[k]
+      if (ac && ac.text) {
+        const pinA0 = state.cfg.pinned.find(p => p.id === k)
+        const isDMx = pinA0 && /#@/.test(String(pinA0.url || ''))
+        state.lastMsgPreview[k] = (ac.out ? 'Вы: ' : (!isDMx && ac.name ? ac.name + ': ' : '')) + ac.text
+        continue
+      }
       const pv = String(state.lastMsgPreview[k] || '')
       if (pv && !tgPreviewAuthored(pv)) {
         const pinT = state.cfg.pinned.find(p => p.id === k && /#@/.test(String(p.url || '')))
@@ -371,6 +379,7 @@ function scheduleActSave() {
         lastMsgAt: { ...state.lastMsgAt },
         lastMsgText: { ...state.lastMsgText },
         lastMsgPreview: { ...state.lastMsgPreview },
+        msgAuth: { ...state.msgAuth },
         liveAct: { ...state.liveAct },
         tgPeerOf: { ...state.tgPeerOf },
         prevUnread: { ...state.prevUnread },
@@ -2035,6 +2044,13 @@ async function pollUnread() {
             if (pinG && pinG.title && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
             state.msgAuth = state.msgAuth || {}
             state.msgAuth[r.id] = { text: pre, out: lb.out, name: lb.name }
+            // сохраняем выученное авторство — переживает перезапуск
+            state.cfg.activity = state.cfg.activity || {}
+            state.cfg.activity.msgAuth = state.msgAuth
+            if (!state.msgAuthSaveAt || Date.now() - state.msgAuthSaveAt > 10000) {
+              state.msgAuthSaveAt = Date.now()
+              try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
+            }
             const isDMp = pinG && /#@/.test(String(pinG.url || ''))
             let auth = ''
             if (lb.out) auth = 'Вы: '
