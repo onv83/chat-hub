@@ -295,6 +295,15 @@ function ensureKeys(cfg) {
     if (state.cfg.activity) state.cfg.activity.liveAct = {}
     try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
   }
+  // сброс №2: первый запуск после фикса успел заново испортить liveAct
+  // (бамп сработал на «прыжке» чисел, когда API MM ответил позже сайдбара)
+  if (!state.cfg.actReset2) {
+    state.cfg.actReset2 = true
+    state.liveAct = {}
+    state.prevUnread = {}
+    if (state.cfg.activity) state.cfg.activity.liveAct = {}
+    try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
+  }
 }
 
 // П.13: сохранение накопленной активности в config.json — дебаунс 20 с,
@@ -1823,12 +1832,17 @@ async function pollUnread() {
       // который открыт прямо сейчас — «если туда написали, он поднимается наверх»),
       // но не на первом замере (запас непрочитанных на старте — не «новое сообщение»).
       // Само открытие чата активностью больше НЕ считается — только сообщения
-      const total = (r.mentions || 0) + (r.count || 0) + (r.unread ? 1 : 0)
-      const prev = state.prevUnread[r.id]
-      if (prev !== undefined && total > prev) {
-        state.liveAct[r.id] = Date.now()
+      // бамп активности — ТОЛЬКО по достоверным данным (MM: пока API не ответил,
+      // сайдбарные числа нулевые/упоминательные; «прыжок» при первом ответе API
+      // поднимал ВСЕ чаты сразу — сортировка ломалась)
+      if (!mmNoApi) {
+        const total = (r.mentions || 0) + (r.count || 0) + (r.unread ? 1 : 0)
+        const prev = state.prevUnread[r.id]
+        if (prev !== undefined && total > prev) {
+          state.liveAct[r.id] = Date.now()
+        }
+        state.prevUnread[r.id] = total
       }
-      state.prevUnread[r.id] = total
     }
     if (svc.id === 'mm') {
       // бейдж вкладки MM — из API (mmTabCounts): два чипа «всего/@упоминаний»;
