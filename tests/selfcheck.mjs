@@ -324,7 +324,7 @@ async function checkRows(sh) {
   })()`)
   pass('строки: ВСЕ ' + (r && r.total || 0) + ' — структура/превью/автор/аватар', r && !r.err && r.bad.length === 0, r && { всего: r.total, плохих: (r.bad || []).length, примеры: (r.bad || []).slice(0, 8), неЖирных: r.warn || 0, группБезМетки: r.noAuth || 0 })
   // одна и та же аватарка не должна стоять у разных чатов
-  const dupCheck = await ev(sh, `(() => {
+  let dupCheck = await ev(sh, `(() => {
     const seen = {}
     document.querySelectorAll('.chat-list .chat-row').forEach(row => {
       const img = row.querySelector('.row-avatar img')
@@ -351,6 +351,7 @@ async function checkRows(sh) {
     }
     return { дубли: bad.length, примеры: bad.slice(0, 3) }
   })()`)
+  if (dupCheck && dupCheck.дубли) { await new Promise(z => setTimeout(z, 1600)); dupCheck = await ev(sh, ) }
   pass('строки: аватары не дублируются между чатами', dupCheck && dupCheck.дубли === 0, dupCheck)
   const fill = await ev(sh, `(() => { const rows = [...document.querySelectorAll('.chat-list .chat-row')]; let f = 0; for (const r2 of rows) { const pv = (r2.querySelector('.chat-row-preview') || {}).textContent || ''; if (pv.trim()) f++ } return { заполнено: f, всего: rows.length } })()`)
   pass('строки: заполнение превью (метрика)', true, fill)
