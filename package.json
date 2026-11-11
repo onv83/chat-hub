@@ -7,7 +7,8 @@
   "author": "Николай Опарин",
   "license": "Apache-2.0",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "selfcheck": "node tests/selfcheck.mjs"
   },
   "devDependencies": {
     "electron": "^33.2.0"
