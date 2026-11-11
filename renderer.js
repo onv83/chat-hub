@@ -1870,6 +1870,16 @@ async function pollUnread() {
         state.pinAvatars[r.id] = r.avatar
         if (row) setRowAvatar(row, r.avatar)
       }
+      // TG: строка не найдена в виртуализированном списке — аватар из шапки пин-вьюхи
+      if (!state.pinAvatars[r.id] && svc.id === 'tg') {
+        try {
+          const pv = state.pinViews[r.id]
+          if (pv) {
+            const av = await grabAvatarFromPinView(pv)
+            if (av) { state.pinAvatars[r.id] = av; if (row) setRowAvatar(row, av) }
+          }
+        } catch (e) {}
+      }
       if (r.mentions) mentions += r.mentions
       if (r.count) countSum += r.count
       if (r.unread) unreadChats++
@@ -2093,7 +2103,7 @@ async function mmLastPosts() {
         const uidCache = ${JSON.stringify(state.mmUserIds || {})};
         const jobs = ${JSON.stringify(mmFavs.map(f => ({ id: f.id, url: f.url })))};
         for (const j of jobs) {
-          const mm2 = String(j.url).match(/\/(channels|messages)\/([^/?#]+)/);
+          const mm2 = String(j.url).match(/\\/(channels|messages)\\/([^/?#]+)/);
           if (!mm2 || mm2[1] !== "messages" || mm2[2].charAt(0) !== "@") continue;
           const u = mm2[2].slice(1);
           if (uidCache[u]) continue;
@@ -2103,7 +2113,7 @@ async function mmLastPosts() {
         for (const tm of teams) { try { const mm3 = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels/members", { headers: H }).then(r => r.json()); if (Array.isArray(mm3)) for (const m of mm3) memMap[m.channel_id] = m } catch (e) {} }
         const res = [];
         for (const j of jobs) {
-          const mm2 = String(j.url).match(/\/(channels|messages)\/([^/?#]+)/);
+          const mm2 = String(j.url).match(/\\/(channels|messages)\\/([^/?#]+)/);
           if (!mm2) continue;
           let ch = null;
           if (mm2[1] === "messages" && mm2[2].charAt(0) === "@") {
@@ -2129,7 +2139,7 @@ async function mmLastPosts() {
                     uname = uidCache["_u_" + uid] || "";
                   }
                 } catch (e) {}
-                prev = (uname ? uname + ": " : "") + String(post.message).replace(/\r?\n+/g, " ").replace(/\*\*/g, "").slice(0, 90);
+                prev = (uname ? uname + ": " : "") + String(post.message).split(String.fromCharCode(13)).join(" ").split(String.fromCharCode(10)).join(" ").split("**").join("").slice(0, 90)
               }
             } catch (e) {}
             res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });
@@ -2202,6 +2212,22 @@ function setRowBadge(row, r) {
 // монограмма (первая буква названия, цвет — хэш названия). Появляется
 // в строке сразу, картинка подменяет монограмму, когда экстрактор
 // притащит data-URL из webview мессенджера.
+// Аватар из шапки пин-вьюхи (для TG-пинов вне отрисованного списка)
+async function grabAvatarFromPinView(wv) {
+  try {
+    return await wv.executeJavaScript(`(async () => {
+      const img = document.querySelector('.chat-info .avatar img, .top .avatar img, .topbar .avatar img, .avatar img')
+      if (!img || !img.src) return ''
+      if (img.src.startsWith('data:')) return img.src
+      try {
+        const b = await fetch(img.src).then(r => r.blob())
+        if (!b || !b.size || b.size > 300000) return ''
+        return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(''); fr.readAsDataURL(b) })
+      } catch (e) { return '' }
+    })()`)
+  } catch (e) { return '' }
+}
+
 function setRowAvatar(row, dataUrl) {
   const slot = row.querySelector('.row-avatar')
   if (!slot) return
@@ -2356,6 +2382,13 @@ async function __chatHubTgUnread(favs, allowScroll) {
       const st = r.querySelector('.dialog-subtitle')
       let preview = st ? String(st.textContent || '').replace(/\s+/g, ' ').trim() : ''
       preview = preview.replace(/^(\d{1,2}:\d{2}|\d{2}\.\d{2}(\.\d{2})?)\s+/, '').slice(0, 90)
+      if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
+      // автор в превью: webk отдаёт «You:» только для своих; в личках входящие — без автора.
+      // Дописываем сами: своё → «Вы:», входящее в личке (@username/#-id с одной стороны) → «{title}:».
+      const isDM = /#@/.test(String(f.url || '')) || /#@/.test(r.getAttribute('href') || '')
+      if (!/^[^:\n]{2,30}:\s/.test(preview)) {
+        preview = (isDM && title ? title + ': ' + preview : preview)
+      }
       if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
       list.push({
         pid: pid,
@@ -2568,7 +2601,7 @@ async function __chatHubYdxUnread(favs) {
       }
       if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    const prevEl2 = idx >= 0 ? items[idx].querySelector('.yamb-chat-list-item__preview, .yamb-chat-list-item__last-message, .ui-entity-block-text') : null
+    const prevEl2 = idx >= 0 ? (items[idx].querySelector('[id$="_text"]') || items[idx].querySelector('.yamb-chat-list-item__preview, .yamb-chat-list-item__last-message, .ui-entity-block-text')) : null
     out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: prevEl2 ? String(prevEl2.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку Телемоста — на вкладку.
