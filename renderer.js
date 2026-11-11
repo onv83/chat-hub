@@ -189,6 +189,17 @@ async function init() {
   ;['keydown', 'mousedown', 'wheel'].forEach(ev =>
     document.addEventListener(ev, () => { state.lastUserInput = Date.now() }, { passive: true, capture: true }))
   setInterval(() => pollUnread().catch(() => {}), 5000)
+  // MAX-вкладка в фоне иногда перестаёт обновлять список сама: периодически
+  // перезагружаем её, только когда пользователь её не смотрит. Это НЕ открытие
+  // чатов — непрочитанные не снимаются, зато превью и счётчики не застаиваются.
+  setInterval(() => {
+    try {
+      const wv = state.svcViews.max
+      const pane = document.querySelector('section[data-tab="svc:max"]')
+      if (!wv || (pane && pane.classList.contains('visible'))) return
+      wv.reload()
+    } catch (e) {}
+  }, 60000)
   // Универсальное выучивание авторства: каждая личка без известного автора
   // один раз открывается в скрытой пин-вьюхе, читается последний пузырь
   // (is-out → «Вы:»), результат запоминается навсегда (msgAuth в конфиге).
@@ -2050,7 +2061,9 @@ async function pollUnread() {
         dC = delta.dC
         dM = delta.dM
         dU = delta.dU
-        if (row) setRowBadge(row, { count: dC, mentions: dM, unread: dU })
+        // В строке — ФАКТИЧЕСКИЕ непрочитанные, а не только прирост от базы:
+        // уже существующие непрочитанные обязаны быть видны красным счётчиком
+        if (row) setRowBadge(row, { count: rawC, mentions: rawM, unread: rawC > 0 || rawM > 0 || r.unread })
       } else if (row) setRowBadge(row, { count: 0, mentions: 0, unread: false })
       // аватарка чата, пойманная экстрактором → кэш и в строку (до
       // следующего рестарта; монограмма-заглушка остаётся, если не поймали)
@@ -2073,8 +2086,8 @@ async function pollUnread() {
       if (r.unread) unreadChats++
       // Сборная — только избранное: всего непрочитанных + упоминания;
       // «точка без числа» (unread без count/mentions) считаем как 1
-      favSumT += dC + (dU && dC === 0 && dM === 0 ? 1 : 0)
-      favSumM += dM
+      favSumT += rawC + (r.unread && rawC === 0 && rawM === 0 ? 1 : 0)
+      favSumM += rawM
       // активность для сортировки: позиция строки в списке мессенджера
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
