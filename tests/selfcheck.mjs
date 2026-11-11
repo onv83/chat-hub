@@ -69,6 +69,33 @@ async function ensureApp() {
 
 // ---------- проверки ----------
 async function checkShell(sh) {
+  const svcPre = await ev(sh, `(() => {
+    const out = {};
+    for (const id of ['mm', 'tg', 'max', 'ydx']) {
+      const wv = state.svcViews[id];
+      const sec = document.querySelector('section[data-tab="svc:' + id + '"]');
+      out[id] = { hasView: !!wv, connected: !!(wv && wv.isConnected), hasSection: !!sec, src: wv ? String(wv.getAttribute('src') || '').slice(0, 45) : '' };
+    }
+    return out;
+  })()`)
+  const allViews = svcPre && ['mm', 'tg', 'max', 'ydx'].every(id => svcPre[id] && svcPre[id].hasView && svcPre[id].connected && svcPre[id].hasSection)
+  pass('сервисы: 4 вкладки предзагружены при старте и живые (постоянно в памяти)', allViews, svcPre)
+  // гостевые страницы реально загружены (готовность документа в каждой)
+  const l0svc = await list()
+  const svcRe = { mm: /im\.astralinux\.ru/, tg: /web\.telegram\.org/, max: /web\.max\.ru/, ydx: /telemost\.yandex\.ru/ }
+  let loadedCount = 0
+  for (const id of ['mm', 'tg', 'max', 'ydx']) {
+    const t = l0svc && l0svc.find(x => x.type === 'webview' && svcRe[id].test(x.url))
+    if (!t) continue
+    try {
+      const c = await connect(t.webSocketDebuggerUrl)
+      const rdy = await ev(c, `(document.readyState === 'complete' || document.readyState === 'interactive') && document.body && document.body.childElementCount > 0`)
+      c.close()
+      if (rdy === true) loadedCount++
+    } catch {}
+  }
+  pass('сервисы: контент всех 4 вьюх загружен (документ готов)', loadedCount >= 4, { loaded: loadedCount })
+
   const cfg = await ev(sh, `(() => ({
     ver: state.cfg.cssDefaultsVersion,
     tgShift: String(state.cfg.columnCss.tg).includes('-202'),
