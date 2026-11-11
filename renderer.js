@@ -1753,25 +1753,30 @@ async function pollUnread() {
     let unreadChats = res.dmUnread ? 1 : 0
     let countSum = 0
     for (const r of (res.favs || [])) {
-      // MM: API-числа (msg_count канала) важнее сайдбарного бейджа-упоминаний
-      if (svc.id === 'mm' && state.mmPinCounts && state.mmPinCounts[r.id]) {
-        const mp = state.mmPinCounts[r.id]
-        if (mp.count > 0) { r.count = mp.count; r.unread = true }
-        if (mp.mentions > 0) { r.mentions = mp.mentions; r.unread = true }
+      // «ТОЛЬКО НОВЫЕ»: показываем ПРИРОСТ непрочитанных, не backlog.
+      // ВАЖНО: у каждого сервиса ОДИН источник чисел — иначе смена источника
+      // (сайдбар -> API) выглядит как «+700 новых». MM: только API msg_count
+      // (state.mmPinCounts); остальные сервисы — счётчики их экстракторов.
+      let rawC = r.count || 0
+      let rawM = r.mentions || 0
+      if (svc.id === 'mm') {
+        const mp = state.mmPinCounts && state.mmPinCounts[r.id]
+        rawC = mp ? (mp.count || 0) : 0
+        rawM = mp ? (mp.mentions || 0) : 0
+        r.count = rawC
+        r.mentions = rawM
+        if (rawC > 0 || rawM > 0) r.unread = true
       }
-      // «ТОЛЬКО НОВЫЕ»: старый запас непрочитанных на старте скрываем — в строке
-      // показываем ПРИРОСТ с первого замера (или с открытия чата). Так в бейджах
-      // видны только реально новые сообщения, а не накопленный backlog.
       state.unreadBaseC = state.unreadBaseC || {}
       state.unreadBaseM = state.unreadBaseM || {}
       state.unreadTotals = state.unreadTotals || {}
-      state.unreadTotals[r.id] = { c: r.count || 0, m: r.mentions || 0 }
-      if (state.unreadBaseC[r.id] === undefined) {
-        state.unreadBaseC[r.id] = r.count || 0
-        state.unreadBaseM[r.id] = r.mentions || 0
-      }
-      const dC = Math.max(0, (r.count || 0) - state.unreadBaseC[r.id])
-      const dM = Math.max(0, (r.mentions || 0) - state.unreadBaseM[r.id])
+      state.unreadTotals[r.id] = { c: rawC, m: rawM }
+      // база = первый замер; прочитали (число упало) → сдвигаем базу вниз,
+      // чтобы следующие новые сообщения снова считались
+      if (state.unreadBaseC[r.id] === undefined || rawC < state.unreadBaseC[r.id]) state.unreadBaseC[r.id] = rawC
+      if (state.unreadBaseM[r.id] === undefined || rawM < state.unreadBaseM[r.id]) state.unreadBaseM[r.id] = rawM
+      const dC = Math.max(0, rawC - state.unreadBaseC[r.id])
+      const dM = Math.max(0, rawM - state.unreadBaseM[r.id])
       const dU = dC > 0 || dM > 0
       const row = document.querySelector('.chat-row[data-pin="' + r.id + '"]')
       if (row) setRowBadge(row, { count: dC, mentions: dM, unread: dU })
