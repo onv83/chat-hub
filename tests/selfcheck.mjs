@@ -300,6 +300,22 @@ async function checkMM(sh) {
   })()`)
   pass('бейджи: дельта новых сообщений от сохранённой базы', deltaFn && deltaFn.dC === 4 && deltaFn.dM === 1 && deltaFn.dU === true, deltaFn)
 
+  // единый модуль для всех мессенджеров: у каждого пина есть база и замер
+  const coverage = await ev(sh, `(() => {
+    const out = {}
+    for (const svc of state.cfg.services) {
+      const pins = (state.cfg.pinned || []).filter(p => p.serviceId === svc.id)
+      out[svc.id] = {
+        pins: pins.length,
+        withTotals: pins.filter(p => (state.unreadTotals || {})[p.id]).length,
+        withBase: pins.filter(p => (state.unreadBaseC || {})[p.id] !== undefined).length
+      }
+    }
+    return out
+  })()`)
+  const coverageOk = coverage && Object.values(coverage).every(x => x.pins === 0 || (x.withTotals === x.pins && x.withBase === x.pins))
+  pass('бейджи: единый модуль покрывает MM/TG/MAX/Телемост', coverageOk, coverage)
+
   // сортировка избранного по активности (📌 всегда сверху)
   const order = await ev(sh, `(() => {
     const rows = Array.from(document.querySelectorAll('.chat-list .chat-row')).slice(0, 12)
