@@ -1037,7 +1037,7 @@ function setRowPreview(el, text) {
     // автор совпадает с названием чата (входящее в личке) — не показываем его второй раз
     const authName = String(t.slice(0, i)).trim().toLowerCase()
     const pinName = rowEl ? String(((state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin) || {}).title || '').trim().toLowerCase() : ''
-    if (authName && pinName && (authName === pinName || pinName.indexOf(authName) === 0)) {
+    if (authName && pinName && (authName === pinName || pinName.indexOf(authName) === 0 || authName.indexOf(pinName) === 0)) {
       el.textContent = rest
     } else {
       el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(rest)
