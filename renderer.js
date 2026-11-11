@@ -2101,7 +2101,7 @@ async function mmLastPosts() {
       '   if (ch && ch.last_post_at) {' +
       '     const mem = memMap[ch.id] || {};' +
       '     let prev = "";' +
-      '     try { const pp = await fetch((ch.team_id ? "/api/v4/teams/" + ch.team_id : "") + "/channels/" + ch.id + "/posts?per_page=1", { headers: H }).then(r => r.json()); const post = pp && pp.posts && pp.order && pp.posts[pp.order[0]]; if (post && post.message) { let uname = ""; try { const uid = post.user_id; if (uid) { if (!uidCache["_u_" + uid]) { const uu = await fetch("/api/v4/users/" + uid, { headers: H }).then(r => r.json()); if (uu && uu.username) uidCache["_u_" + uid] = uu.username } uname = uidCache["_u_" + uid] || "" } } catch (e) {} prev = (uname ? uname + ": " : "") + String(post.message).replace(/[\r\n]+/g, " ").replace(/\*\*/g, "").slice(0, 90) } catch (e) {}' +
+      '     try { const pp = await fetch((ch.team_id ? "/api/v4/teams/" + ch.team_id : "") + "/channels/" + ch.id + "/posts?per_page=1", { headers: H }).then(r => r.json()); const post = pp && pp.posts && pp.order && pp.posts[pp.order[0]]; if (post && post.message) { let uname = ""; try { const uid = post.user_id; if (uid) { if (!uidCache["_u_" + uid]) { const uu = await fetch("/api/v4/users/" + uid, { headers: H }).then(r => r.json()); if (uu && uu.username) uidCache["_u_" + uid] = uu.username } uname = uidCache["_u_" + uid] || "" } } catch (e) {} prev = (uname ? uname + ": " : "") + String(post.message).replace(/[\r\n]+/g, " ").replace(/\*\*/g, "").slice(0, 90) } } catch (e) {}' +
       '     res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });' +
       '   }' +
       ' }' +
@@ -2486,7 +2486,7 @@ async function __chatHubMaxUnread(favs) {
       }
       if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    const prevEl = idx >= 0 ? items[idx].querySelector('span.text') : null
+    const textSpans = idx >= 0 ? Array.from(items[idx].querySelectorAll('span.text')) : []; const prevEl = textSpans.find(t => String(t.textContent || '').trim() !== (idx >= 0 ? nameOf(items[idx]) : '')) || null
     out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: prevEl ? String(prevEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
