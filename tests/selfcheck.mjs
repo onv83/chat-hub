@@ -337,6 +337,9 @@ async function checkRows(sh) {
     })
     const bad = []
     for (const [k, titles] of Object.entries(seen)) {
+      // SVG-монограмма — сгенерированная заглушка (одинаковые инициалы+цвет
+      // у разных групп дают идентичный SVG); фото — строго
+      if (String(k).startsWith('data:image/svg')) continue
       const uniq = [...new Set(titles)]
       if (uniq.length < 2) continue
       // один человек с двумя чатами (разные номера) — нормально: общее слово в названиях
