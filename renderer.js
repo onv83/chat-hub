@@ -2037,7 +2037,9 @@ function fmtRowTime(ms) {
 async function mmTabCounts() {
   const now = Date.now()
   if (state.mmTabCountsAt && now - state.mmTabCountsAt < 30000) return
-  const wv = svcViewFor('mm')
+  // API зовём из СЕРВИСНОЙ вкладки: первые пин-вьюхи могут быть «скелетом»
+  // (пустое тело) и на /api/v4 отдают HTML вместо JSON
+  const wv = state.svcViews['mm'] || svcViewFor('mm')
   if (!wv || !wv.executeJavaScript) return
   try {
     const out = await wv.executeJavaScript('(async () => { try {' +
@@ -2062,7 +2064,7 @@ async function mmTabCounts() {
 async function mmLastPosts() {
   const now = Date.now()
   if (state.mmChannelsAt && now - state.mmChannelsAt < 30000) return
-  const wv = svcViewFor('mm')
+  const wv = state.svcViews['mm'] || svcViewFor('mm')
   if (!wv) return
   const mmFavs = favoritesOf('mm')
   if (!mmFavs.length) return
