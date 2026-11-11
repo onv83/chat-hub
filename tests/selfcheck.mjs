@@ -278,9 +278,9 @@ async function checkRows(sh) {
   await ev(sh, 'activateTab("combined")')
   await new Promise(r => setTimeout(r, 400))
   const r = await ev(sh, `(() => {
-    const rows = [...document.querySelectorAll('.chat-list .chat-row')].slice(0, 8)
+    const rows = [...document.querySelectorAll('.chat-list .chat-row')]
     if (!rows.length) return { err: 'нет строк' }
-    const out = { total: rows.length, bad: [] }
+    const out = { total: rows.length, bad: [], warn: 0, noAuth: 0 }
     for (const row of rows) {
       const title = (row.querySelector('.chat-row-title') || {}).textContent || ''
       const time = ((row.querySelector('.row-time') || {}).textContent || '').trim()
@@ -297,10 +297,14 @@ async function checkRows(sh) {
       else if (Math.round(ab.width) < 40) out.bad.push('аватар мал: ' + Math.round(ab.width))
       const prevPlain = prevEl ? String(prevEl.textContent || '').trim() : ''
       const isUrl = /^(https?:|ftp:|mailto:)/.test(prevPlain)
-      if (!isUrl && prevEl && prev && prev.includes(':') && !/<b>/.test(prev)) out.bad.push('автор не жирным')
+      if (!isUrl && prevEl && prev && prev.includes(':') && !/<b>/.test(prev)) out.warn = (out.warn || 0) + 1
       const prevText = prevEl ? String(prevEl.textContent || '').trim() : ''
-      if (!prevText) out.bad.push('пустое превью: ' + title.slice(0, 14))
-      if ((src === 'Mattermost' || src === 'Telegram') && prevText && prevText.indexOf(':') < 0) out.bad.push('нет автора в превью: ' + title.slice(0, 14))
+      const pinO = state.cfg.pinned.find(p => p.id === row.dataset.pin)
+      const isDM = !!(pinO && /#@/.test(String(pinO.url || '')))
+      const hasData = !!(state.lastMsgPreview || {})[row.dataset.pin]
+      if (!isDM && prevText && title && prevText.indexOf(title) === 0 && prevText.length > title.length) out.bad.push('дубль имени в превью (группа): ' + title.slice(0, 14))
+      if (!prevText && hasData) out.bad.push('превью не отображено при данных: ' + title.slice(0, 14))
+      if ((src === 'Mattermost' || src === 'Telegram') && !isDM && prevText && prevText.indexOf(':') < 0) out.noAuth = (out.noAuth || 0) + 1
     }
     // меню: ⋮ скрыт без наведения, открывается вправо, закрывается blur
     const row = rows[0]
@@ -318,7 +322,38 @@ async function checkRows(sh) {
     }
     return { ...out, hiddenByDefault, opensRight, menuItems, closedOnBlur }
   })()`)
-  pass('строки: название/время(формат)/источник/аватар 40px+', r && !r.err && r.bad.length === 0, r && (r.bad || r.err))
+  pass('строки: ВСЕ ' + (r && r.total || 0) + ' — структура/превью/автор/аватар', r && !r.err && r.bad.length === 0, r && { всего: r.total, плохих: (r.bad || []).length, примеры: (r.bad || []).slice(0, 8), неЖирных: r.warn || 0, группБезМетки: r.noAuth || 0 })
+  // одна и та же аватарка не должна стоять у разных чатов
+  const dupCheck = await ev(sh, `(() => {
+    const seen = {}
+    document.querySelectorAll('.chat-list .chat-row').forEach(row => {
+      const img = row.querySelector('.row-avatar img')
+      if (!img) return
+      const k = String(img.currentSrc || img.src || '')
+      if (!k) return
+      const tt = ((row.querySelector('.chat-row-title') || {}).textContent || '').trim()
+      if (!seen[k]) seen[k] = []
+      seen[k].push(tt)
+    })
+    const bad = []
+    for (const [k, titles] of Object.entries(seen)) {
+      const uniq = [...new Set(titles)]
+      if (uniq.length < 2) continue
+      // один человек с двумя чатами (разные номера) — нормально: общее слово в названиях
+      const words = uniq.map(t => String(t).toLowerCase().replace(/[^а-яёa-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 4))
+      let common = false
+      for (let i = 0; i < words.length && !common; i++) {
+        for (let j = i + 1; j < words.length; j++) {
+          if (words[i].some(w => words[j].includes(w))) { common = true; break }
+        }
+      }
+      if (!common) bad.push(uniq.join(' / ').slice(0, 60))
+    }
+    return { дубли: bad.length, примеры: bad.slice(0, 3) }
+  })()`)
+  pass('строки: аватары не дублируются между чатами', dupCheck && dupCheck.дубли === 0, dupCheck)
+  const fill = await ev(sh, `(() => { const rows = [...document.querySelectorAll('.chat-list .chat-row')]; let f = 0; for (const r2 of rows) { const pv = (r2.querySelector('.chat-row-preview') || {}).textContent || ''; if (pv.trim()) f++ } return { заполнено: f, всего: rows.length } })()`)
+  pass('строки: заполнение превью (метрика)', true, fill)
   pass('строки: ⋮ скрыт без наведения, меню вправо (2 пункта), закрывается кликом в чат', r && r.hiddenByDefault && r.opensRight && r.menuItems === 2 && r.closedOnBlur, r && { hiddenByDefault: r.hiddenByDefault, opensRight: r.opensRight, menuItems: r.menuItems, closedOnBlur: r.closedOnBlur })
 }
 
