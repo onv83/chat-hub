@@ -951,6 +951,13 @@ function makeChatRow(p) {
       menu.querySelector('[data-act="pin"] span').textContent = p.priority ? 'Открепить' : 'Закрепить'
       menu.classList.remove('hidden')
       menu.classList.add('open')
+      // меню раскрывается ВПРАВО, в сторону чата (поверх области чата)
+      const br = more.getBoundingClientRect()
+      menu.style.left = Math.round(br.right + 6) + 'px'
+      menu.style.top = Math.round(br.top - 6) + 'px'
+      const mr = menu.getBoundingClientRect()
+      if (mr.bottom > window.innerHeight - 8) menu.style.top = Math.round(window.innerHeight - mr.height - 8) + 'px'
+      if (mr.right > window.innerWidth - 8) menu.style.left = Math.round(Math.max(8, window.innerWidth - mr.width - 8)) + 'px'
     }
   }
   menu.addEventListener('click', (e) => e.stopPropagation())
@@ -963,7 +970,11 @@ function makeChatRow(p) {
 function closeAllRowMenus() {
   document.querySelectorAll('.row-menu.open').forEach(m => { m.classList.remove('open'); m.classList.add('hidden') })
 }
+// закрытие: клик мимо (шелл), клик ВНУТРИ вебвью (у шелла срабатывает blur),
+// Escape. Иначе меню «зависало» после клика в чате.
 document.addEventListener('click', () => closeAllRowMenus())
+window.addEventListener('blur', () => closeAllRowMenus())
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllRowMenus() })
 
 function selectChat(pinId) {
   const p = state.cfg.pinned.find(x => x.id === pinId)
@@ -1853,6 +1864,8 @@ async function pollUnread() {
       // активность для сортировки: позиция строки в списке мессенджера
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
+      // превью последнего сообщения: TG/MAX/Телемост — из экстракторов, MM — из API постов
+      if (r.preview) state.lastMsgPreview[r.id] = r.preview
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       if (r.time) {
