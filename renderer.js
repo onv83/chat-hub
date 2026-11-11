@@ -937,7 +937,7 @@ function makeChatRow(p) {
   ttl.textContent = dispTitle
   ttl.title = p.url
   row.querySelector('.chat-row-src').textContent = svcName
-  row.querySelector('.chat-row-preview').textContent = state.lastMsgPreview[p.id] || ''
+  setRowPreview(row.querySelector('.chat-row-preview'), state.lastMsgPreview[p.id] || '')
   const timeEl = row.querySelector('.row-time')
   timeEl.textContent = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id]) : ''
   timeEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
@@ -969,6 +969,20 @@ function makeChatRow(p) {
 }
 
 // закрыть все открытые меню строк (клик мимо / открытие другого)
+// Превью строки: «Автор: текст» — автор жирным (до первого двоеточия)
+function setRowPreview(el, text) {
+  if (!el) return
+  const t = String(text || '')
+  if (el.dataset.txt === t) return
+  el.dataset.txt = t
+  const i = t.indexOf(': ')
+  if (i > 0 && i < 40) {
+    el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(t.slice(i + 2))
+  } else {
+    el.textContent = t
+  }
+}
+
 function closeAllRowMenus() {
   document.querySelectorAll('.row-menu.open').forEach(m => { m.classList.remove('open'); m.classList.add('hidden') })
 }
@@ -1928,8 +1942,7 @@ async function pollUnread() {
     if (sEl) { const wantS = svc ? svc.name : '?'; if (sEl.textContent !== wantS) sEl.textContent = wantS }
     const pEl = row.querySelector('.chat-row-preview')
     if (pEl) {
-      const want = state.lastMsgPreview[p.id] || ''
-      if (pEl.textContent !== want) pEl.textContent = want
+      setRowPreview(pEl, state.lastMsgPreview[p.id] || '')
     }
   }
   sortFavoritesByActivity()
@@ -2329,7 +2342,8 @@ async function __chatHubTgUnread(favs, allowScroll) {
       }
       const st = r.querySelector('.dialog-subtitle')
       let preview = st ? String(st.textContent || '').replace(/\s+/g, ' ').trim() : ''
-      preview = preview.replace(/^(\d{1,2}:\d{2}|\d{2}\.\d{2}(\.\d{2})?|[а-яa-z]{2,3})\s+/i, '').slice(0, 90)
+      preview = preview.replace(/^(\d{1,2}:\d{2}|\d{2}\.\d{2}(\.\d{2})?)\s+/, '').slice(0, 90)
+      if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
       list.push({
         pid: pid,
         u: r.getAttribute('href') || '',
