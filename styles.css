@@ -183,7 +183,9 @@ body.split-dragging webview { pointer-events: none !important; }
 .row-badge {
   flex: 0 0 auto; background: #da373c; color: #fff;
   border-radius: 10px; padding: 1px 7px; font-size: 11px; font-weight: 600;
+  margin-left: auto;
 }
+.row-badge.hidden { display: none; }
 .row-badge.mention { background: #ff453a; font-weight: 800; }
 .svc-badge {
   flex: 0 0 22px; height: 22px; border-radius: 6px; color: #fff;
