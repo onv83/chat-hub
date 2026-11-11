@@ -897,9 +897,10 @@ function makeChatRow(p) {
         <span class="row-time"></span>
       </div>
       <div class="row-line2">
-        <div class="chat-row-preview"></div>
+        <div class="chat-row-src"></div>
         <span class="row-badge hidden"></span>
       </div>
+      <div class="chat-row-preview"></div>
     </div>
     <button class="icon-btn row-more" title="Действия">⋮</button>
     <div class="row-menu hidden">
@@ -935,7 +936,8 @@ function makeChatRow(p) {
   } catch {}
   ttl.textContent = dispTitle
   ttl.title = p.url
-  row.querySelector('.chat-row-preview').textContent = state.lastMsgPreview[p.id] || svcName
+  row.querySelector('.chat-row-src').textContent = svcName
+  row.querySelector('.chat-row-preview').textContent = state.lastMsgPreview[p.id] || ''
   const timeEl = row.querySelector('.row-time')
   timeEl.textContent = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id]) : ''
   timeEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
@@ -1922,9 +1924,11 @@ async function pollUnread() {
       if (tEl.textContent !== want) tEl.textContent = want
       tEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
     }
+    const sEl = row.querySelector('.chat-row-src')
+    if (sEl) { const wantS = svc ? svc.name : '?'; if (sEl.textContent !== wantS) sEl.textContent = wantS }
     const pEl = row.querySelector('.chat-row-preview')
     if (pEl) {
-      const want = state.lastMsgPreview[p.id] || (svc ? svc.name : '?')
+      const want = state.lastMsgPreview[p.id] || ''
       if (pEl.textContent !== want) pEl.textContent = want
     }
   }
@@ -2097,7 +2101,7 @@ async function mmLastPosts() {
       '   if (ch && ch.last_post_at) {' +
       '     const mem = memMap[ch.id] || {};' +
       '     let prev = "";' +
-      '     try { const pp = await fetch("/api/v4/teams/" + ch.team_id + "/channels/" + ch.id + "/posts?per_page=1", { headers: H }).then(r => r.json()); const post = pp && pp.posts && pp.order && pp.posts[pp.order[0]]; if (post && post.message) prev = String(post.message).replace(/[\r\n]+/g, " ").replace(/\*\*/g, "").slice(0, 90) } catch (e) {}' +
+      '     try { const pp = await fetch((ch.team_id ? "/api/v4/teams/" + ch.team_id : "") + "/channels/" + ch.id + "/posts?per_page=1", { headers: H }).then(r => r.json()); const post = pp && pp.posts && pp.order && pp.posts[pp.order[0]]; if (post && post.message) { let uname = ""; try { const uid = post.user_id; if (uid) { if (!uidCache["_u_" + uid]) { const uu = await fetch("/api/v4/users/" + uid, { headers: H }).then(r => r.json()); if (uu && uu.username) uidCache["_u_" + uid] = uu.username } uname = uidCache["_u_" + uid] || "" } } catch (e) {} prev = (uname ? uname + ": " : "") + String(post.message).replace(/[\r\n]+/g, " ").replace(/\*\*/g, "").slice(0, 90) } catch (e) {}' +
       '     res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });' +
       '   }' +
       ' }' +
