@@ -305,6 +305,13 @@ function ensureKeys(cfg) {
     if (state.cfg.activity) state.cfg.activity.liveAct = {}
     try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
   }
+  // сброс №4: авторство последних сообщений теперь берётся из открытого чата
+  if (!state.cfg.actReset4) {
+    state.cfg.actReset4 = true
+    state.lastMsgPreview = {}
+    if (state.cfg.activity) state.cfg.activity.lastMsgPreview = {}
+    try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
+  }
   // сброс №3: старые сохранённые превью содержат удвоенные названия/неверных авторов —
   // чистим, пусть пересоберутся с мессенджеров по новым правилам
   if (!state.cfg.actReset3) {
@@ -1956,7 +1963,7 @@ async function pollUnread() {
         try {
           const pv = state.pinViews[r.id]
           if (pv) {
-            const av = await grabAvatarFromPinView(pv)
+            const av = await grabAvatarFromPinView(pv, r.url)
             if (av) { state.pinAvatars[r.id] = av; if (row) setRowAvatar(row, av) }
           }
         } catch (e) {}
@@ -1972,7 +1979,22 @@ async function pollUnread() {
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
       // превью последнего сообщения: TG/MAX/Телемост — из экстракторов, MM — из API постов
-      if (r.preview) { let pv = String(r.preview); if (!tgPreviewAuthored(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id && /#@/.test(String(p.url || ''))); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
+      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2);  state.lastMsgPreview[r.id] = pv
+      if (r.svc === 'tg' && state.pinViews && state.pinViews[r.id]) {
+        try {
+          const lb = await grabViewLastMsg(state.pinViews[r.id], r.url)
+          if (lb && lb.text) {
+            let pre = lb.text
+            const pinG = state.cfg.pinned.find(p => p.id === r.id)
+            if (pinG && pinG.title && !/#@/.test(String(pinG.url || '')) && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
+            const isDMp = pinG && /#@/.test(String(pinG.url || ''))
+            let auth = ''
+            if (lb.out) auth = 'Вы: '
+            else if (!isDMp && lb.name) auth = lb.name + ': '
+            state.lastMsgPreview[r.id] = auth + pre
+          }
+        } catch (e) {}
+      } }
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       if (r.time) {
@@ -2240,7 +2262,18 @@ async function mmLastPosts() {
       }
       state.mmPinCounts = state.mmPinCounts || {}
       state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
-      if (r.preview) { let pv = String(r.preview); if (!tgPreviewAuthored(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id && /#@/.test(String(p.url || ''))); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
+      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2);  state.lastMsgPreview[r.id] = pv
+      if (r.svc === 'tg' && state.pinViews && state.pinViews[r.id]) {
+        try {
+          const lb = await grabViewLastMsg(state.pinViews[r.id], r.url)
+          if (lb && lb.text) {
+            let pre = lb.text
+            const pinG = state.cfg.pinned.find(p => p.id === r.id)
+            if (pinG && pinG.title && !/#@/.test(String(pinG.url || '')) && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
+            state.lastMsgPreview[r.id] = (lb.out ? 'Вы: ' : ((lb.name || (pinG && pinG.title) || '') + ': ')) + pre
+          }
+        } catch (e) {}
+      } }
     }
   } catch (e) {}
 }
@@ -2294,9 +2327,17 @@ function setRowBadge(row, r) {
 // в строке сразу, картинка подменяет монограмму, когда экстрактор
 // притащит data-URL из webview мессенджера.
 // Аватар из шапки пин-вьюхи (для TG-пинов вне отрисованного списка)
-async function grabAvatarFromPinView(wv) {
+async function grabAvatarFromPinView(wv, pinUrl) {
+  // аватар берём ТОЛЬКО если вьюха показывает именно этот чат (сверка хэша),
+  // иначе в строки уезжала аватарка чужого чата из шапки вьюхи
+  const mm = String(pinUrl || '').match(/#([-@A-Za-z0-9_]+)/)
+  const want = mm ? mm[1] : ''
+  if (!want) return ''
   try {
     return await wv.executeJavaScript(`(async () => {
+      const want = ${JSON.stringify(want)}
+      const cur = String(location.hash || '').replace(/^#/, '')
+      if (cur !== want) return ''
       const img = document.querySelector('.chat-info .avatar img, .top .avatar img, .topbar .avatar img, .avatar img')
       if (!img || !img.src) return ''
       if (img.src.startsWith('data:')) return img.src
@@ -2307,6 +2348,16 @@ async function grabAvatarFromPinView(wv) {
       } catch (e) { return '' }
     })()`)
   } catch (e) { return '' }
+}
+
+// Авторитетное авторство: последний пузырь в ОТКРЫТОМ чате (is-out — писал я)
+async function grabViewLastMsg(wv, pinUrl) {
+  const mm = String(pinUrl || '').match(/#([-@A-Za-z0-9_]+)/)
+  const want = mm ? mm[1] : ''
+  if (!want) return null
+  try {
+    return await wv.executeJavaScript()
+  } catch (e) { return null }
 }
 
 function setRowAvatar(row, dataUrl) {
