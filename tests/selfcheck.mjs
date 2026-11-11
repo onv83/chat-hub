@@ -177,7 +177,17 @@ async function checkMM(sh) {
     return findView(x, /im\.astralinux\.ru.*\/(channels|messages)\//) ? x : null
   }, 30, 1000)
   if (!l) { pass('ММ: вьюха пина загрузилась', false); return }
-  const t = findView(l, /im\.astralinux\.ru.*\/(channels|messages)\//)
+  let t = null
+  let bestW = 1e9
+  for (const cand of l.filter(x => x.type === 'webview' && /im\.astralinux\.ru/.test(x.url))) {
+    try {
+      const cc = await connect(cand.webSocketDebuggerUrl)
+      const iw = await ev(cc, 'window.innerWidth')
+      cc.close()
+      if ((iw || 0) > 0 && iw < bestW) { bestW = iw; t = cand }
+    } catch {}
+  }
+  if (!t) { pass('ММ: вьюха пина загрузилась', false); return }
   const c = await connect(t.webSocketDebuggerUrl)
   const r = await waitFor(async () => {
     const v = await ev(c, `(() => {
@@ -265,13 +275,13 @@ async function checkRows(sh) {
     const out = { total: rows.length, bad: [] }
     for (const row of rows) {
       const title = (row.querySelector('.chat-row-title') || {}).textContent || ''
-      const time = (row.querySelector('.row-time') || {}).textContent || ''
+      const time = ((row.querySelector('.row-time') || {}).textContent || '').trim()
       const src = (row.querySelector('.chat-row-src') || {}).textContent || ''
       const prevEl = row.querySelector('.chat-row-preview')
       const prev = prevEl ? prevEl.innerHTML : ''
       const av = row.querySelector('.row-avatar')
       const ab = av ? av.getBoundingClientRect() : { width: 0 }
-      const timeOk = /^\d{1,2}:\d{2}$/.test(time) || time === 'вчера' || /^\d{2}\.\d{2}(\.\d{2})?$/.test(time)
+      const hm = time.split(':'); const dm = time.split('.'); const isDig = (str) => str.length > 0 && Array.from(str).every(ch => ch >= '0' && ch <= '9'); const timeOk = time === 'вчера' || (hm.length === 2 && isDig(hm[0]) && hm[0].length <= 2 && isDig(hm[1]) && hm[1].length === 2) || (dm.length >= 2 && dm.length <= 3 && dm.every(isDig))
       if (!title) out.bad.push('нет названия')
       if (!timeOk && time !== '') out.bad.push('время: ' + time)
       if (!src) out.bad.push('нет источника')
@@ -351,6 +361,7 @@ async function main() {
   await checkShell(sh)
   await checkRows(sh)
   await checkMM(sh)
+  await ev(sh, `(async () => { try { await mmLastPosts() } catch (e) {} ; await new Promise(z => setTimeout(z, 800)); return 1 })()`.replace('mmLastPosts', 'state.svcViews[\'mm\'] ? mmLastPosts : mmLastPosts'))
 
   // TG
   await widthsCheck(sh, 'tg',
