@@ -327,6 +327,12 @@ function ensureKeys(cfg) {
       }
     }
     merge(state.liveAct, A.liveAct)
+    // liveAct — время сообщения, а не момент обнаружения: старые значения
+    // Date.now() нормализуем к lastMsgAt, иначе старые чаты всплывают наверх
+    for (const k of Object.keys(state.liveAct)) {
+      const msgAt = state.lastMsgAt[k] || 0
+      if (msgAt && state.liveAct[k] > msgAt) state.liveAct[k] = msgAt
+    }
     merge(state.tgPeerOf, A.tgPeerOf)
     merge(state.prevUnread, A.prevUnread)
     // база «новых» непрочитанных переживает перезапуск: без неё после
@@ -2119,7 +2125,9 @@ async function pollUnread() {
         const prevAt = state.__prevLastMsgAt && state.__prevLastMsgAt[r.id] || 0
         const nowAt = state.lastMsgAt[r.id] || 0
         if (shouldBumpLiveAct(prev, total, prevAt, nowAt)) {
-          state.liveAct[r.id] = Date.now()
+          // бамп = ВРЕМЯ СООБЩЕНИЯ, а не время обнаружения бейджа:
+          // старый чат с непрочитанными не должен обгонять свежие
+          state.liveAct[r.id] = nowAt
         }
         state.prevUnread[r.id] = total
       }
