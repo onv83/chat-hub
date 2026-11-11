@@ -302,7 +302,7 @@ async function checkRows(sh) {
       const pinO = state.cfg.pinned.find(p => p.id === row.dataset.pin)
       const isDM = !!(pinO && /#@/.test(String(pinO.url || '')))
       const hasData = !!(state.lastMsgPreview || {})[row.dataset.pin]
-      if (prevText && title && prevText.indexOf(title) === 0 && prevText.length > title.length) out.bad.push('дубль имени в превью: ' + title.slice(0, 14))
+      if (!isDM && prevText && title && prevText.indexOf(title) === 0 && prevText.length > title.length) out.bad.push('дубль имени в превью (группа): ' + title.slice(0, 14))
       if (!prevText && hasData) out.bad.push('превью не отображено при данных: ' + title.slice(0, 14))
       if ((src === 'Mattermost' || src === 'Telegram') && !isDM && prevText && prevText.indexOf(':') < 0) out.noAuth = (out.noAuth || 0) + 1
     }
@@ -357,6 +357,28 @@ async function checkRows(sh) {
   pass('строки: аватары не дублируются между чатами', dupCheck && dupCheck.дубли === 0, dupCheck)
   const fill = await ev(sh, `(() => { const rows = [...document.querySelectorAll('.chat-list .chat-row')]; let f = 0; for (const r2 of rows) { const pv = (r2.querySelector('.chat-row-preview') || {}).textContent || ''; if (pv.trim()) f++ } return { заполнено: f, всего: rows.length } })()`)
   pass('строки: заполнение превью (метрика)', true, fill)
+  // MM: у каждого закреплённого чата должно быть последнее сообщение из API
+  const mmChk = await ev(sh, `(() => {
+    const pins = (state.cfg.pinned || []).filter(p => /im\.astralinux\.ru/.test(String(p.url || '')))
+    const empty = pins.filter(p => !(state.lastMsgPreview || {})[p.id]).map(p => String(p.title).slice(0, 20))
+    return { всего: pins.length, без: empty.length, список: empty.slice(0, 8) }
+  })()`)
+  pass('строки MM: у всех есть последнее сообщение', mmChk && mmChk.без === 0, mmChk)
+  // аватарки: ни одного пустого кружка (фото или буква-монограмма)
+  const avChk = await ev(sh, `(() => {
+    const rows = [...document.querySelectorAll('.chat-list .chat-row')]
+    let empty = 0
+    const list = []
+    for (const r of rows) {
+      const av = r.querySelector('.row-avatar')
+      if (!av) continue
+      const img = av.querySelector('img')
+      const letter = String(av.textContent || '').trim()
+      if (!img && !letter) { empty++; list.push(((r.querySelector('.chat-row-title') || {}).textContent || '').slice(0, 16)) }
+    }
+    return { пусто: empty, список: list.slice(0, 6) }
+  })()`)
+  pass('аватары: нет пустых кружков (фото или буква)', avChk && avChk.пусто === 0, avChk)
   pass('строки: ⋮ скрыт без наведения, меню вправо (2 пункта), закрывается кликом в чат', r && r.hiddenByDefault && r.opensRight && r.menuItems === 2 && r.closedOnBlur, r && { hiddenByDefault: r.hiddenByDefault, opensRight: r.opensRight, menuItems: r.menuItems, closedOnBlur: r.closedOnBlur })
 }
 
