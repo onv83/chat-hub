@@ -261,12 +261,26 @@ async function checkMM(sh) {
 async function widthsCheck(sh, kind, viewRe, measureExpr, name) {
   const pinId = await selectPin(sh, kind)
   if (!pinId) { pass(name + ': пин в избранном существует', false); return }
+  // ширина именно ПИН-вьюхи: сервисная вкладка может иметь URL, совпадающий
+  // с пиновым шаблоном (например, MAX deep-link) — различаем по ширине
+  const wvW = await ev(sh, `(() => { const wv = state.pinViews[${JSON.stringify(pinId)}]; if (!wv) return 0; return Math.round(wv.getBoundingClientRect().width) })()`)
   const l = await waitFor(async () => {
     const x = await list()
     return findView(x, viewRe) ? x : null
   }, 30, 1000)
   if (!l) { pass(name + ': вьюха загрузилась', false); return }
-  const c = await connect(findView(l, viewRe).webSocketDebuggerUrl)
+  let t = null
+  for (const cand of l.filter(x => x.type === 'webview' && viewRe.test(x.url))) {
+    if (!wvW) { t = t || cand; continue }
+    try {
+      const cc = await connect(cand.webSocketDebuggerUrl)
+      const iw = await ev(cc, 'window.innerWidth')
+      cc.close()
+      if (Math.abs((iw || 0) - wvW) <= 12) { t = cand; break }
+    } catch {}
+  }
+  if (!t) { pass(name + ': вьюха загрузилась', false, { wvW }); return }
+  const c = await connect(t.webSocketDebuggerUrl)
   let allOk = true
   const details = []
   for (const w of [600, 900, 1260]) {
