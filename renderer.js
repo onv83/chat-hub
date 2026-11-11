@@ -2055,74 +2055,62 @@ async function mmTabCounts() {
   const wv = state.svcViews['mm'] || svcViewFor('mm')
   if (!wv || !wv.executeJavaScript) return
   try {
-    const out = await wv.executeJavaScript('(async () => { try {' +
-      ' const r = await fetch("/api/v4/users/me/teams/unread", { headers: { "X-Requested-With": "XMLHttpRequest" } }).then(x => x.json());' +
-      ' if (!Array.isArray(r) || !r.length) return "";' +
-      ' let t = 0, m = 0;' +
-      ' for (const u of r) { t += Number(u.msg_count) || 0; m += Number(u.mention_count) || 0 }' +
-      ' return JSON.stringify({ t, m });' +
-      ' } catch (e) { return "" } })()')
-    if (!out) return
-    state.mmTabCountsAt = now
-    const c = JSON.parse(out)
-    if (typeof c.t === 'number') {
-      // запоминаем для агрегата «★ Сборной» (п.20)
-      state.svcTabTotals = state.svcTabTotals || {}
-      state.svcTabTotals.mm = { t: c.t, m: c.m }
-      updateBadge2('mm', c.t, c.m)
-    }
-  } catch {}
-}
-
-async function mmLastPosts() {
-  const now = Date.now()
-  if (state.mmChannelsAt && now - state.mmChannelsAt < 30000) return
-  const wv = state.svcViews['mm'] || svcViewFor('mm')
-  if (!wv) return
-  const mmFavs = favoritesOf('mm')
-  if (!mmFavs.length) return
-  try {
-    const out = await wv.executeJavaScript('(async () => {' +
-      ' const H = { "X-Requested-With": "XMLHttpRequest" };' +
-      ' try {' +
-      ' const teams = await fetch("/api/v4/users/me/teams", { headers: H }).then(r => r.json());' +
-      ' if (!Array.isArray(teams) || !teams.length) return "";' +
-      // каналы собираем СО ВСЕХ команд MM (у пользователя их несколько:
-      // workspad/ispsystem/uveon/rubackup/astralinux — channels/teams[0]
-      // не покрывал пины из других команд)
-      ' let chs = [];' +
-      ' for (const tm of teams) { try { const tc = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels", { headers: H }).then(r => r.json()); if (Array.isArray(tc)) chs = chs.concat(tc) } catch (e) {} }' +
-      ' if (!chs.length) return "";' +
-      ' const uidCache = ' + JSON.stringify(state.mmUserIds || {}) + ';' +
-      ' const jobs = ' + JSON.stringify(mmFavs.map(f => ({ id: f.id, url: f.url }))) + ';' +
-      ' for (const j of jobs) {' +
-      '   const mm2 = String(j.url).match(/\\/(channels|messages)\\/([^/?#]+)/);' +
-      '   if (!mm2 || mm2[1] !== "messages" || mm2[2].charAt(0) !== "@") continue;' +
-      '   const u = mm2[2].slice(1);' +
-      '   if (uidCache[u]) continue;' +
-      '   try { const usr = await fetch("/api/v4/users/username/" + encodeURIComponent(u), { headers: H }).then(r => r.json()); if (usr && usr.id) uidCache[u] = usr.id } catch (e) {}' +
-      ' }' +
-      ' const memMap = {};' +
-      ' for (const tm of teams) { try { const mm2 = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels/members", { headers: H }).then(r => r.json()); if (Array.isArray(mm2)) for (const mm3 of mm2) memMap[mm3.channel_id] = mm3 } catch (e) {} }' +
-      ' const res = [];' +
-      ' for (const j of jobs) {' +
-      '   const mm2 = String(j.url).match(/\\/(channels|messages)\\/([^/?#]+)/);' +
-      '   if (!mm2) continue;' +
-      '   let ch = null;' +
-      '   if (mm2[1] === "messages" && mm2[2].charAt(0) === "@") {' +
-      '     const uid = uidCache[mm2[2].slice(1)];' +
-      '     if (uid) ch = chs.find(c => c.type === "D" && String(c.name).split("__").indexOf(uid) >= 0);' +
-      '   } else { ch = chs.find(c => (c.type === "O" || c.type === "P") && c.name === mm2[2]) }' +
-      '   if (ch && ch.last_post_at) {' +
-      '     const mem = memMap[ch.id] || {};' +
-      '     let prev = "";' +
-      '     try { const pp = await fetch((ch.team_id ? "/api/v4/teams/" + ch.team_id : "") + "/channels/" + ch.id + "/posts?per_page=1", { headers: H }).then(r => r.json()); const post = pp && pp.posts && pp.order && pp.posts[pp.order[0]]; if (post && post.message) { let uname = ""; try { const uid = post.user_id; if (uid) { if (!uidCache["_u_" + uid]) { const uu = await fetch("/api/v4/users/" + uid, { headers: H }).then(r => r.json()); if (uu && uu.username) uidCache["_u_" + uid] = uu.username } uname = uidCache["_u_" + uid] || "" } } catch (e) {} prev = (uname ? uname + ": " : "") + String(post.message).replace(/[\r\n]+/g, " ").replace(/\*\*/g, "").slice(0, 90) } } catch (e) {}' +
-      '     res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });' +
-      '   }' +
-      ' }' +
-      ' return JSON.stringify({ uidCache: uidCache, res: res });' +
-      ' } catch (e) { return "" }' +
-      '})()')
+    const out = await wv.executeJavaScript(`(async () => {
+      const H = { "X-Requested-With": "XMLHttpRequest" };
+      try {
+        const teams = await fetch("/api/v4/users/me/teams", { headers: H }).then(r => r.json());
+        if (!Array.isArray(teams) || !teams.length) return "";
+        let chs = [];
+        for (const tm of teams) { try { const tc = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels", { headers: H }).then(r => r.json()); if (Array.isArray(tc)) chs = chs.concat(tc) } catch (e) {} }
+        if (!chs.length) return "";
+        const uidCache = ${JSON.stringify(state.mmUserIds || {})};
+        const jobs = ${JSON.stringify(mmFavs.map(f => ({ id: f.id, url: f.url })))};
+        for (const j of jobs) {
+          const mm2 = String(j.url).match(/\/(channels|messages)\/([^/?#]+)/);
+          if (!mm2 || mm2[1] !== "messages" || mm2[2].charAt(0) !== "@") continue;
+          const u = mm2[2].slice(1);
+          if (uidCache[u]) continue;
+          try { const usr = await fetch("/api/v4/users/username/" + encodeURIComponent(u), { headers: H }).then(r => r.json()); if (usr && usr.id) uidCache[u] = usr.id } catch (e) {}
+        }
+        const memMap = {};
+        for (const tm of teams) { try { const mm3 = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels/members", { headers: H }).then(r => r.json()); if (Array.isArray(mm3)) for (const m of mm3) memMap[m.channel_id] = m } catch (e) {} }
+        const res = [];
+        for (const j of jobs) {
+          const mm2 = String(j.url).match(/\/(channels|messages)\/([^/?#]+)/);
+          if (!mm2) continue;
+          let ch = null;
+          if (mm2[1] === "messages" && mm2[2].charAt(0) === "@") {
+            const uid = uidCache[mm2[2].slice(1)];
+            if (uid) ch = chs.find(c => c.type === "D" && String(c.name).split("__").indexOf(uid) >= 0);
+          } else { ch = chs.find(c => (c.type === "O" || c.type === "P") && c.name === mm2[2]) }
+          if (ch && ch.last_post_at) {
+            const mem = memMap[ch.id] || {};
+            let prev = "";
+            try {
+              const purl = (ch.team_id ? "/api/v4/teams/" + ch.team_id : "") + "/channels/" + ch.id + "/posts?per_page=1";
+              const pp = await fetch(purl, { headers: H }).then(r => r.json());
+              const post = pp && pp.posts && pp.order && pp.order.length ? pp.posts[pp.order[0]] : null;
+              if (post && post.message) {
+                let uname = "";
+                try {
+                  const uid = post.user_id;
+                  if (uid) {
+                    if (!uidCache["_u_" + uid]) {
+                      const uu = await fetch("/api/v4/users/" + uid, { headers: H }).then(r => r.json());
+                      if (uu && uu.username) uidCache["_u_" + uid] = uu.username;
+                    }
+                    uname = uidCache["_u_" + uid] || "";
+                  }
+                } catch (e) {}
+                prev = (uname ? uname + ": " : "") + String(post.message).replace(/\r?\n+/g, " ").replace(/\*\*/g, "").slice(0, 90);
+              }
+            } catch (e) {}
+            res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });
+          }
+        }
+        return JSON.stringify({ uidCache: uidCache, res: res });
+      } catch (e) { return "" }
+    })()`)
     if (!out) return
     const d = JSON.parse(out)
     state.mmUserIds = d.uidCache || {}
