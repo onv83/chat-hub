@@ -282,6 +282,14 @@ function ensureKeys(cfg) {
     merge(state.lastMsgAt, A.lastMsgAt)
     merge(state.lastMsgText, A.lastMsgText)
     merge(state.lastMsgPreview, A.lastMsgPreview)
+    // восстановленные превью нормализуем: без автора — дописываем имя чата
+    for (const k of Object.keys(state.lastMsgPreview)) {
+      const pv = String(state.lastMsgPreview[k] || '')
+      if (pv && pv.indexOf(':') < 0) {
+        const pinT = state.cfg.pinned.find(p => p.id === k)
+        if (pinT && pinT.title) state.lastMsgPreview[k] = String(pinT.title) + ': ' + pv
+      }
+    }
     merge(state.liveAct, A.liveAct)
     merge(state.tgPeerOf, A.tgPeerOf)
     merge(state.prevUnread, A.prevUnread)
@@ -975,12 +983,59 @@ function setRowPreview(el, text) {
   const t = String(text || '')
   if (el.dataset.txt === t) return
   el.dataset.txt = t
-  const i = t.indexOf(': ')
+  // автор до первого двоеточия — жирным; пробел после двоеточия НЕ обязателен (ydx даёт «Имя:Текст»)
+  let i = t.indexOf(': ')
+  let rest = ''
+  if (i > 0 && i < 40) rest = t.slice(i + 2)
+  else {
+    const j = t.indexOf(':')
+    if (j > 0 && /^(https?|ftp|mailto)$/i.test(t.slice(0, j))) return void (el.textContent = t)
+    if (j > 0 && j < 40) { i = j; rest = t.slice(j + 1).trimStart() }
+  }
   if (i > 0 && i < 40) {
-    el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(t.slice(i + 2))
+    el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(rest)
   } else {
     el.textContent = t
   }
+}
+
+// Локальная самопроверка (кнопка в настройках): отчёт можно скопировать и отправить
+function localSelfcheck() {
+  const out = []
+  const pass = (name, ok, detail) => out.push((ok ? 'PASS ' : 'FAIL ') + name + (detail !== undefined ? '   ' + JSON.stringify(detail) : ''))
+  const cfg = state.cfg || {}
+  pass('конфиг: миграция CSS v5+', Number(cfg.cssDefaultsVersion) >= 5, cfg.cssDefaultsVersion)
+  pass('конфиг: сдвиги TG/MAX удалены', !String((cfg.columnCss || {}).tg || '').includes('-202') && !String((cfg.columnCss || {}).max || '').includes('-77'))
+  pass('юнит: parseChatTime', parseChatTime('10:24').at > 0 && parseChatTime('вчера').at > 0)
+  let cssFav = false, cssTi = false, cssHb = false
+  for (const ss of document.styleSheets) { try { for (const r of ss.cssRules) { const sx = r.selectorText || ''; if (sx.includes('fav-badge-always')) cssFav = true; if (sx.includes('tab-icons')) cssTi = true; if (sx.includes('hide-badges')) cssHb = true } } catch (e) {} }
+  pass('CSS: ★-бейдж/иконки вкладок/скрытие счётчиков', cssFav && cssTi && cssHb)
+  activateTab('settings')
+  const light = document.querySelector('input[name="theme"][value="light"]')
+  pass('настройки: «Светлая (мм не поддерживается)»', !!light && !!light.parentElement && light.parentElement.textContent.includes('мм не поддерживается'))
+  pass('настройки: галочки ★/иконки/индексация', !!document.getElementById('fav-badge-always') && !!document.getElementById('tab-icons') && !!document.getElementById('tg-bg-index'))
+  const rows = [...document.querySelectorAll('.chat-list .chat-row')]
+  pass('строки: есть', rows.length > 0, rows.length)
+  let bad = 0
+  const exact = []
+  for (const row of rows) {
+    const src = (row.querySelector('.chat-row-src') || {}).textContent || ''
+    const pv = row.querySelector('.chat-row-preview')
+    const pt = pv ? String(pv.textContent || '').trim() : ''
+    const t = ((row.querySelector('.row-time') || {}).textContent || '').trim()
+    const tmOk = t === 'вчера' || t.split(':').length === 2 || t.split('.').length >= 2
+    const av = row.querySelector('.row-avatar')
+    const avOk = !!av && Math.round((av.getBoundingClientRect() || { width: 0 }).width || 0) >= 40
+    const title = (row.querySelector('.chat-row-title') || {}).textContent || ''
+    const authOk = !(src === 'Mattermost' || src === 'Telegram') || pt.indexOf(':') > 0
+    if (!(title && src && tmOk && avOk && pt && authOk)) { bad++; if (exact.length < 3) exact.push(String(title).slice(0, 14)) }
+  }
+  pass('строки: название/время/источник/аватар/превью+автор', bad === 0, exact.length ? exact : undefined)
+  pass('MM: счётчики API', Object.keys(state.mmPinCounts || {}).length > 0, Object.keys(state.mmPinCounts || {}).length)
+  pass('сервисы: 4 вкладки живы', ['mm', 'tg', 'max', 'ydx'].every(id => state.svcViews[id] && state.svcViews[id].isConnected))
+  pass('бейджи: дельты активны', !!state.unreadBaseC && Object.keys(state.unreadBaseC).length > 0)
+  activateTab('combined')
+  return out
 }
 
 function closeAllRowMenus() {
@@ -1816,6 +1871,7 @@ async function pollUnread() {
             // аватарку из обычного сбора не теряем: объект поиска её не несёт
             const prev = byId.get(f.id)
             if (prev && prev.avatar && !f.avatar) f.avatar = prev.avatar
+            if (prev && prev.preview && !f.preview) f.preview = prev.preview
             byId.set(f.id, f)
             if (f.pidStale) { try { delete state.tgPeerOf[f.id] } catch (e) {} }
             else if (f.pid && (!state.tgPeerOf[f.id] || String(state.tgPeerOf[f.id]) === String(f.pid))) {
@@ -1824,6 +1880,13 @@ async function pollUnread() {
             }
           }
           res = { favs: Array.from(byId.values()), svcTotals: (res && res.svcTotals) || null }
+          // автор в превью: если webk не дал «Имя:», подставляем название чата
+          for (const f of res.favs) {
+            if (f.preview && String(f.preview).indexOf(":") < 0) {
+              const pinT = state.cfg.pinned.find(p => p.id === f.id)
+              if (pinT && pinT.title) f.preview = pinT.title + ": " + f.preview
+            }
+          }
         }
       } catch {}
     }
@@ -1891,7 +1954,7 @@ async function pollUnread() {
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
       // превью последнего сообщения: TG/MAX/Телемост — из экстракторов, MM — из API постов
-      if (r.preview) state.lastMsgPreview[r.id] = r.preview
+      if (r.preview) { let pv = String(r.preview); if (pv.indexOf(":") < 0) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       if (r.time) {
@@ -2124,7 +2187,7 @@ async function mmLastPosts() {
             const mem = memMap[ch.id] || {};
             let prev = "";
             try {
-              const purl = (ch.team_id ? "/api/v4/teams/" + ch.team_id : "") + "/channels/" + ch.id + "/posts?per_page=1";
+              const purl = "/api/v4/channels/" + ch.id + "/posts?per_page=1";
               const pp = await fetch(purl, { headers: H }).then(r => r.json());
               const post = pp && pp.posts && pp.order && pp.order.length ? pp.posts[pp.order[0]] : null;
               if (post && post.message) {
@@ -2159,7 +2222,7 @@ async function mmLastPosts() {
       }
       state.mmPinCounts = state.mmPinCounts || {}
       state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
-      if (r.preview) state.lastMsgPreview[r.id] = r.preview
+      if (r.preview) { let pv = String(r.preview); if (pv.indexOf(":") < 0) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
     }
   } catch (e) {}
 }
@@ -2385,7 +2448,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
       // автор в превью: webk отдаёт «You:» только для своих; в личках входящие — без автора.
       // Дописываем сами: своё → «Вы:», входящее в личке (@username/#-id с одной стороны) → «{title}:».
-      const isDM = /#@/.test(String(f.url || '')) || /#@/.test(r.getAttribute('href') || '')
+      const isDM = /#@/.test(r.getAttribute('href') || '')
       if (!/^[^:\n]{2,30}:\s/.test(preview)) {
         preview = (isDM && title ? title + ': ' + preview : preview)
       }
@@ -2506,7 +2569,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (count > 0 || row.unreadTitle) unread = true
       if (f.needAvatar) avatar = await __grabAvatar(row.el)
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? (row.preview || '') : '' })
+    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? (row.preview && String(row.preview).indexOf(':') >= 0 ? row.preview : (String(f.title || '') + ': ' + String(row.preview || '')).trim()) : '' })
   }
   // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
   // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
@@ -2743,6 +2806,15 @@ function buildSettings(sec) {
       <h3>Избранное</h3>
       <div id="pin-rows"></div>
 
+      <h3>Диагностика</h3>
+      <p class="hint">Локальная самопроверка интерфейса и данных (без запуска внешних страниц).
+      Отчёт можно скопировать и отправить разработчику.</p>
+      <div class="form-row">
+        <button class="btn" id="run-selfcheck">🧪 Самопроверка</button>
+        <button class="btn" id="copy-selfcheck" disabled>📋 Скопировать отчёт</button>
+      </div>
+      <pre id="selfcheck-report" style="display:none;max-height:260px;overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;font:11px/1.5 Consolas,monospace;color:var(--text);white-space:pre-wrap;"></pre>
+
       <div class="settings-actions">
         <button class="btn primary" id="save-settings">💾 Сохранить и перезапустить</button>
         <button class="btn danger" id="reset-pins">Очистить избранное</button>
@@ -2823,6 +2895,25 @@ function buildSettings(sec) {
       }
     })
 
+    // кнопка «Самопроверка»: отчёт в pre, копирование в буфер
+    const scBtn = document.getElementById('run-selfcheck')
+    if (scBtn) {
+      scBtn.onclick = () => {
+        const rep = document.getElementById('selfcheck-report')
+        const copyBtn = document.getElementById('copy-selfcheck')
+        const lines = localSelfcheck()
+        const fails = lines.filter(l => l.indexOf('FAIL') === 0).length
+        rep.textContent = 'Самопроверка ChatHub — ' + new Date().toLocaleString('ru-RU') + '\n' + lines.join('\n') + '\n\nИТОГ: ' + (lines.length - fails) + ' PASS, ' + fails + ' FAIL'
+        rep.style.display = 'block'
+        if (copyBtn) {
+          copyBtn.disabled = false
+          copyBtn.onclick = () => {
+            const txt = rep.textContent
+            try { navigator.clipboard.writeText(txt).then(() => toast('Отчёт скопирован')).catch(() => toast('Не удалось скопировать')) } catch (e) { toast('Не удалось скопировать') }
+          }
+        }
+      }
+    }
     renderSvcRows()
   renderCssRows()
   renderZoomRows()
