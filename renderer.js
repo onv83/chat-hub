@@ -9,6 +9,7 @@ const state = {
   pinViews: {},        // pinId -> <webview> этого чата: гружен заранее, открытие мгновенное
   combinedBuilt: false,
   liveAct: {},         // pinId -> Date.now() всплеска активности (пришли сообщения)
+  lastMsgPreview: {},  // pinId -> текст последнего сообщения (превью в строке)
   rankAct: {},         // pinId -> позиция строки в списке мессенджера (меньше = свежее; 9999 = не в списке)
   prevUnread: {},      // pinId -> прошлое число непрочитанных (детект новых сообщений)
   lastUsed: {},        // pinId -> Date.now() последнего открытия (для вытеснения неактивных вьюх)
@@ -280,6 +281,7 @@ function ensureKeys(cfg) {
     const merge = (dst, src) => { if (src && typeof src === 'object') for (const k of Object.keys(src)) { try { dst[k] = src[k] } catch (e) {} } }
     merge(state.lastMsgAt, A.lastMsgAt)
     merge(state.lastMsgText, A.lastMsgText)
+    merge(state.lastMsgPreview, A.lastMsgPreview)
     merge(state.liveAct, A.liveAct)
     merge(state.tgPeerOf, A.tgPeerOf)
     merge(state.prevUnread, A.prevUnread)
@@ -317,6 +319,7 @@ function scheduleActSave() {
       state.cfg.activity = {
         lastMsgAt: { ...state.lastMsgAt },
         lastMsgText: { ...state.lastMsgText },
+        lastMsgPreview: { ...state.lastMsgPreview },
         liveAct: { ...state.liveAct },
         tgPeerOf: { ...state.tgPeerOf },
         prevUnread: { ...state.prevUnread },
@@ -889,12 +892,20 @@ function makeChatRow(p) {
     ${svc && state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
     <span class="row-avatar" aria-hidden="true"></span>
     <div class="chat-row-text">
-      <div class="chat-row-title"></div>
-      <div class="chat-row-svc"></div>
+      <div class="row-line1">
+        <div class="chat-row-title"></div>
+        <span class="row-time"></span>
+      </div>
+      <div class="row-line2">
+        <div class="chat-row-preview"></div>
+        <span class="row-badge hidden"></span>
+      </div>
     </div>
-    <span class="row-badge hidden"></span>
-    <button class="icon-btn row-pin-btn" title="Закрепить наверху (как в Telegram) / открепить">📌</button>
-    <button class="icon-btn row-del" title="Убрать из избранного">✕</button>`
+    <button class="icon-btn row-more" title="Действия">⋮</button>
+    <div class="row-menu hidden">
+      <button data-act="pin">📌 <span>Закрепить</span></button>
+      <button data-act="del">✕ Удалить</button>
+    </div>`
   const badge = row.querySelector('.svc-badge')
   badge.dataset.svc = svc ? svc.id : ''
   if (svc && state.svcIcons[svc.id]) badge.src = state.svcIcons[svc.id]
@@ -924,12 +935,35 @@ function makeChatRow(p) {
   } catch {}
   ttl.textContent = dispTitle
   ttl.title = p.url
-  row.querySelector('.chat-row-svc').textContent = svcName + (state.lastMsgText[p.id] ? ' · ' + state.lastMsgText[p.id] : '')
-  row.onclick = (e) => { if (!e.target.closest('.icon-btn')) selectChat(p.id) }
-  row.querySelector('.row-del').onclick = () => removePin(p.id)
-  row.querySelector('.row-pin-btn').onclick = () => togglePin(p.id)
+  row.querySelector('.chat-row-preview').textContent = state.lastMsgPreview[p.id] || svcName
+  const timeEl = row.querySelector('.row-time')
+  timeEl.textContent = state.lastMsgText[p.id] || ''
+  timeEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
+  row.onclick = (e) => { if (!e.target.closest('.icon-btn') && !e.target.closest('.row-menu')) selectChat(p.id) }
+  // меню действий ⋮ (как контекстное меню в MAX): закрепить/открепить, удалить
+  const more = row.querySelector('.row-more')
+  const menu = row.querySelector('.row-menu')
+  more.onclick = (e) => {
+    e.stopPropagation()
+    const wasOpen = menu.classList.contains('open')
+    closeAllRowMenus()
+    if (!wasOpen) {
+      menu.querySelector('[data-act="pin"] span').textContent = p.priority ? 'Открепить' : 'Закрепить'
+      menu.classList.remove('hidden')
+      menu.classList.add('open')
+    }
+  }
+  menu.addEventListener('click', (e) => e.stopPropagation())
+  menu.querySelector('[data-act="pin"]').onclick = () => { closeAllRowMenus(); togglePin(p.id) }
+  menu.querySelector('[data-act="del"]').onclick = () => { closeAllRowMenus(); removePin(p.id) }
   return row
 }
+
+// закрыть все открытые меню строк (клик мимо / открытие другого)
+function closeAllRowMenus() {
+  document.querySelectorAll('.row-menu.open').forEach(m => { m.classList.remove('open'); m.classList.add('hidden') })
+}
+document.addEventListener('click', () => closeAllRowMenus())
 
 function selectChat(pinId) {
   const p = state.cfg.pinned.find(x => x.id === pinId)
@@ -1866,12 +1900,20 @@ async function pollUnread() {
   // время последнего сообщения в строках: «Мессенджер · 17:30»
   // (в т.ч. MM — из API; полный текст времени — в подсказке)
   for (const p of state.cfg.pinned) {
-    const el = document.querySelector('.chat-row[data-pin="' + p.id + '"] .chat-row-svc')
-    if (!el) continue
+    const row = document.querySelector('.chat-row[data-pin="' + p.id + '"]')
+    if (!row) continue
     const svc = state.cfg.services.find(s => s.id === p.serviceId)
-    const want = (svc ? svc.name : '?') + (state.lastMsgText[p.id] ? ' · ' + state.lastMsgText[p.id] : '')
-    if (el.textContent !== want) el.textContent = want
-    el.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
+    const tEl = row.querySelector('.row-time')
+    if (tEl) {
+      const want = state.lastMsgText[p.id] || ''
+      if (tEl.textContent !== want) tEl.textContent = want
+      tEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
+    }
+    const pEl = row.querySelector('.chat-row-preview')
+    if (pEl) {
+      const want = state.lastMsgPreview[p.id] || (svc ? svc.name : '?')
+      if (pEl.textContent !== want) pEl.textContent = want
+    }
   }
   sortFavoritesByActivity()
   // П.13: накопленные времена/pid/liveAct — в config.json (дебаунс 20 с),
@@ -2022,7 +2064,12 @@ async function mmLastPosts() {
       '     const uid = uidCache[mm2[2].slice(1)];' +
       '     if (uid) ch = chs.find(c => c.type === "D" && String(c.name).split("__").indexOf(uid) >= 0);' +
       '   } else { ch = chs.find(c => (c.type === "O" || c.type === "P") && c.name === mm2[2]) }' +
-      '   if (ch && ch.last_post_at) { const mem = memMap[ch.id] || {}; res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0 }); }' +
+      '   if (ch && ch.last_post_at) {' +
+      '     const mem = memMap[ch.id] || {};' +
+      '     let prev = "";' +
+      '     try { const pp = await fetch("/api/v4/teams/" + ch.team_id + "/channels/" + ch.id + "/posts?per_page=1", { headers: H }).then(r => r.json()); const post = pp && pp.posts && pp.order && pp.posts[pp.order[0]]; if (post && post.message) prev = String(post.message).replace(/[\r\n]+/g, " ").replace(/\*\*/g, "").slice(0, 90) } catch (e) {}' +
+      '     res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });' +
+      '   }' +
       ' }' +
       ' return JSON.stringify({ uidCache: uidCache, res: res });' +
       ' } catch (e) { return "" }' +
@@ -2040,6 +2087,7 @@ async function mmLastPosts() {
       // избранного — число новых сообщений канала, а не только @упоминания
       state.mmPinCounts = state.mmPinCounts || {}
       state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
+      if (r.preview) state.lastMsgPreview[r.id] = r.preview
     }
   } catch (e) {}
 }
@@ -2243,6 +2291,9 @@ async function __chatHubTgUnread(favs, allowScroll) {
           mentions = parseN(bd.textContent) || 1
         }
       }
+      const st = r.querySelector('.dialog-subtitle')
+      let preview = st ? String(st.textContent || '').replace(/\s+/g, ' ').trim() : ''
+      preview = preview.replace(/^(\d{1,2}:\d{2}|\d{2}\.\d{2}(\.\d{2})?|[а-яa-z]{2,3})\s+/i, '').slice(0, 90)
       list.push({
         pid: pid,
         u: r.getAttribute('href') || '',
@@ -2251,6 +2302,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
         unreadTxt: bd ? bd.textContent.trim() : '',
         mentions: mentions,
         unreadTitle: /unreadPeerTitle/.test(String(t.className)),
+        preview: preview,
         idx: idx,
         el: r
       })
@@ -2358,7 +2410,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (count > 0 || row.unreadTitle) unread = true
       if (f.needAvatar) avatar = await __grabAvatar(row.el)
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar })
+    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? (row.preview || '') : '' })
   }
   // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
   // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
@@ -2400,7 +2452,8 @@ async function __chatHubMaxUnread(favs) {
       }
       if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar })
+    const prevEl = idx >= 0 ? items[idx].querySelector('span.text') : null
+    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: prevEl ? String(prevEl.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
   // Маркеров упоминаний список MAX не показывает — только общее число.
@@ -2452,7 +2505,8 @@ async function __chatHubYdxUnread(favs) {
       }
       if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar })
+    const prevEl2 = idx >= 0 ? items[idx].querySelector('.yamb-chat-list-item__preview, .yamb-chat-list-item__last-message, .ui-entity-block-text') : null
+    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: prevEl2 ? String(prevEl2.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку Телемоста — на вкладку.
   // Маркеров упоминаний список не показывает — только общее число.
