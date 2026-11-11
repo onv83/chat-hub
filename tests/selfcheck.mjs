@@ -351,7 +351,6 @@ async function checkRows(sh) {
     }
     return { дубли: bad.length, примеры: bad.slice(0, 3) }
   })()`)
-  if (dupCheck && dupCheck.дубли) { await new Promise(z => setTimeout(z, 1600)); dupCheck = await ev(sh, ) }
   pass('строки: аватары не дублируются между чатами', dupCheck && dupCheck.дубли === 0, dupCheck)
   const fill = await ev(sh, `(() => { const rows = [...document.querySelectorAll('.chat-list .chat-row')]; let f = 0; for (const r2 of rows) { const pv = (r2.querySelector('.chat-row-preview') || {}).textContent || ''; if (pv.trim()) f++ } return { заполнено: f, всего: rows.length } })()`)
   pass('строки: заполнение превью (метрика)', true, fill)

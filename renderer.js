@@ -71,11 +71,19 @@ function __chatHubGrabAvatar(el) {
       const tgAv = el.querySelector('.dialog-avatar')
       if (tgAv && !tgAv.querySelector('img')) {
         const bg = getComputedStyle(tgAv).backgroundImage || ''
+        const bgc = getComputedStyle(tgAv).backgroundColor || ''
         const cm = bg.match(/rgba?\([^)]+\)/)
         const ct = (tgAv.textContent || '').trim()
-        if (cm && ct) {
+        // цвет: стоп градиента → background-color → палитра по хэшу текста.
+        // Раньше при непарсинге в SVG попадал "undefined" и кружок был прозрачный.
+        const palette = ['#e17076', '#7bc862', '#e5ca77', '#65aadd', '#a695e7', '#ee7aae', '#6ec9cb', '#faa774']
+        let col = cm ? cm[1] : ''
+        if (!col && bgc && bgc !== 'rgba(0, 0, 0, 0)' && bgc !== 'transparent') col = bgc
+        if (!col) { let hsh = 0; for (const ch of ct) hsh = (hsh * 31 + ch.charCodeAt(0)) | 0; col = palette[Math.abs(hsh) % palette.length] }
+        if (!/^(#|rgba?\()/.test(col)) col = palette[0]
+        if (ct) {
           const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-          const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="' + esc(cm[1]) + '"/></linearGradient></defs><rect width="72" height="72" rx="36" fill="url(#g)"/><text x="36" y="47" font-family="sans-serif" font-size="26" font-weight="600" fill="#fff" text-anchor="middle">' + esc(ct.slice(0, 2)) + '</text></svg>'
+          const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72"><rect width="72" height="72" rx="36" fill="' + esc(col) + '"/><text x="36" y="47" font-family="sans-serif" font-size="26" font-weight="600" fill="#fff" text-anchor="middle">' + esc(ct.slice(0, 2)) + '</text></svg>'
           return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
         }
       }
