@@ -285,7 +285,7 @@ function ensureKeys(cfg) {
     // восстановленные превью нормализуем: без автора — дописываем имя чата
     for (const k of Object.keys(state.lastMsgPreview)) {
       const pv = String(state.lastMsgPreview[k] || '')
-      if (pv && pv.indexOf(':') < 0) {
+      if (pv && (pv.indexOf(':') < 0 || /^(https?|ftp|mailto):/i.test(pv))) {
         const pinT = state.cfg.pinned.find(p => p.id === k)
         if (pinT && pinT.title) state.lastMsgPreview[k] = String(pinT.title) + ': ' + pv
       }
@@ -1954,7 +1954,7 @@ async function pollUnread() {
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
       // превью последнего сообщения: TG/MAX/Телемост — из экстракторов, MM — из API постов
-      if (r.preview) { let pv = String(r.preview); if (pv.indexOf(":") < 0) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
+      if (r.preview) { let pv = String(r.preview); if (pv.indexOf(":") < 0 || /^(https?|ftp|mailto):/i.test(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       if (r.time) {
@@ -2222,7 +2222,7 @@ async function mmLastPosts() {
       }
       state.mmPinCounts = state.mmPinCounts || {}
       state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
-      if (r.preview) { let pv = String(r.preview); if (pv.indexOf(":") < 0) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
+      if (r.preview) { let pv = String(r.preview); if (pv.indexOf(":") < 0 || /^(https?|ftp|mailto):/i.test(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
     }
   } catch (e) {}
 }
@@ -2569,7 +2569,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (count > 0 || row.unreadTitle) unread = true
       if (f.needAvatar) avatar = await __grabAvatar(row.el)
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? (row.preview && String(row.preview).indexOf(':') >= 0 ? row.preview : (String(f.title || '') + ': ' + String(row.preview || '')).trim()) : '' })
+    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? (row.preview && String(row.preview).indexOf(':') >= 0 && !/^(https?|ftp|mailto):/i.test(String(row.preview)) ? row.preview : (String(f.title || '') + ': ' + String(row.preview || '')).trim()) : '' })
   }
   // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
   // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
