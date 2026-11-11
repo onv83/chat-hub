@@ -188,7 +188,7 @@ async function init() {
   // Универсальное выучивание авторства: каждая личка без известного автора
   // один раз открывается в скрытой пин-вьюхе, читается последний пузырь
   // (is-out → «Вы:»), результат запоминается навсегда (msgAuth в конфиге).
-  setInterval(() => learnAuthorSweep().catch(() => {}), 12000)
+  setInterval(() => learnAuthorSweep().catch(() => {}), 8000)
   // TG-вкладка после старта иногда остаётся пустым скелетом: webk грузится,
   // но не гидрируется, и reload() это не лечит. Свежесозданный webview с тем
   // же адресом рендерится корректно, поэтому при пустом списке диалогов
@@ -2450,12 +2450,15 @@ async function learnAuthorSweep() {
   state.learnBusy = true
   try {
     const pins = (state.cfg.pinned || []).filter(p => /web\.telegram\.org/.test(String(p.url || '')))
-    const need = pins.filter(p => !(state.msgAuth || {})[p.id] && !(state.pinViews || {})[p.id] && (state.lastMsgPreview || {})[p.id])
-    const batch = need.slice(0, 2)
+    const need = pins.filter(p => !(state.msgAuth || {})[p.id] && (state.lastMsgPreview || {})[p.id])
+    const batch = need.slice(0, 4)
     for (const pin of batch) {
       try {
-        await ensurePinView(pin)
-        await new Promise(z => setTimeout(z, 1600))
+        const haveView = !!(state.pinViews || {})[pin.id]
+        if (!haveView) {
+          await ensurePinView(pin)
+          await new Promise(z => setTimeout(z, 1200))
+        }
         const pv = (state.pinViews || {})[pin.id]
         if (!pv) continue
         const lb = await grabViewLastMsg(pv, pin.url)
