@@ -2936,8 +2936,9 @@ async function __chatHubMaxUnread(favs) {
       }
       if (f.needAvatar) avatar = await __grabAvatar(items[idx])
     }
-    const textSpans = idx >= 0 ? Array.from(items[idx].querySelectorAll('span.text')) : []
-    const prevEl = textSpans.find(t => String(t.textContent || '').trim() !== (idx >= 0 ? nameOf(items[idx]) : '')) || null
+    // текст последнего сообщения — именно span.text.svelte-q2jdqb;
+    // числовые бейджи непрочитанных живут в других классах (text--20/indicator)
+    const prevEl = idx >= 0 ? (items[idx].querySelector('span.text.svelte-q2jdqb') || null) : null
     let preview = prevEl ? String(prevEl.textContent || '') : ''
     // MAX: у групп есть отдельный span.author («Илья М:»), у части строк
     // автор вшит в начало текста. Формируем единое «Автор: текст».
