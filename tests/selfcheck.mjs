@@ -244,8 +244,12 @@ async function widthsCheck(sh, kind, viewRe, measureExpr, name) {
   const details = []
   for (const w of [600, 900, 1260]) {
     await c.send('Emulation.setDeviceMetricsOverride', { width: w, height: 820, deviceScaleFactor: 1, mobile: false })
-    await sleep(1700)
-    const m = await ev(c, measureExpr)
+    await sleep(2400)
+    let m = await ev(c, measureExpr)
+    // второй замер после устаканивания (у webk на <640px slide-анимация)
+    await sleep(900)
+    const m2 = await ev(c, measureExpr)
+    if (m2 && !m2.__err) m = m2
     details.push({ w, m })
     const ok = m && !m.__err && m.left >= -1 && (m.right === undefined || m.right <= m.iw + 2) && m.sw <= m.iw + 2
     if (!ok) allOk = false
