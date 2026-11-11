@@ -269,6 +269,14 @@ async function checkMM(sh) {
 }
 
 async function checkRows(sh) {
+  // увести курсор в угол через Input CDP, чтобы hover не влиял на «⋮ скрыт без наведения»
+  try {
+    await sh.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 2, y: 2 })
+    await new Promise(r => setTimeout(r, 300))
+  } catch {}
+  // «Избранное» должно быть активно — иначе скрытые строки дают rect=0
+  await ev(sh, 'activateTab("combined")')
+  await new Promise(r => setTimeout(r, 400))
   const r = await ev(sh, `(() => {
     const rows = [...document.querySelectorAll('.chat-list .chat-row')].slice(0, 8)
     if (!rows.length) return { err: 'нет строк' }
@@ -287,7 +295,12 @@ async function checkRows(sh) {
       if (!src) out.bad.push('нет источника')
       if (!av) out.bad.push('нет слота аватара')
       else if (Math.round(ab.width) < 40) out.bad.push('аватар мал: ' + Math.round(ab.width))
-      if (prevEl && prev && prev.includes(':') && !/<b>/.test(prev)) out.bad.push('автор не жирным')
+      const prevPlain = prevEl ? String(prevEl.textContent || '').trim() : ''
+      const isUrl = /^(https?:|ftp:|mailto:)/.test(prevPlain)
+      if (!isUrl && prevEl && prev && prev.includes(':') && !/<b>/.test(prev)) out.bad.push('автор не жирным')
+      const prevText = prevEl ? String(prevEl.textContent || '').trim() : ''
+      if (!prevText) out.bad.push('пустое превью: ' + title.slice(0, 14))
+      if ((src === 'Mattermost' || src === 'Telegram') && prevText && prevText.indexOf(':') < 0) out.bad.push('нет автора в превью: ' + title.slice(0, 14))
     }
     // меню: ⋮ скрыт без наведения, открывается вправо, закрывается blur
     const row = rows[0]
