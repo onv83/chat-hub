@@ -1024,14 +1024,16 @@ function makeChatRow(p) {
 function setRowPreview(el, text) {
   if (!el) return
   let t = String(text || '')
-  // защита от дубля: текст, начинающийся с названия чата, показываем без него
   const rowEl = el.closest('.chat-row')
-  if (rowEl) {
-    const pin = (state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin)
-    if (pin && pin.title) {
-      const pre = String(pin.title).trim() + ': '
-      if (t.indexOf(pre) === 0) t = t.slice(pre.length)
-    }
+  const pin = rowEl ? (state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin) : null
+  if (pin && pin.title) {
+    const pre = String(pin.title).trim() + ': '
+    if (t.indexOf(pre) === 0) t = t.slice(pre.length)
+    // личка: без метки автора непонятно, кто писал — подставляем имя чата
+    // (свои сообщения идут с «Вы:», их не трогаем)
+    const isDMp = /#@/.test(String(pin.url || ''))
+    const hasAuth = /^[^:]{2,40}:\s?/.test(t) || /^Вы:/.test(t) || /^(https?|ftp|mailto):/i.test(t)
+    if (isDMp && t && !hasAuth) t = String(pin.title).trim() + ': ' + t
   }
   if (el.dataset.txt === t) return
   el.dataset.txt = t
@@ -1045,14 +1047,7 @@ function setRowPreview(el, text) {
     if (j > 0 && j < 40) { i = j; rest = t.slice(j + 1).trimStart() }
   }
   if (i > 0 && i < 40) {
-    // автор совпадает с названием чата (входящее в личке) — не показываем его второй раз
-    const authName = String(t.slice(0, i)).trim().toLowerCase()
-    const pinName = rowEl ? String(((state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin) || {}).title || '').trim().toLowerCase() : ''
-    if (authName && pinName && (authName === pinName || pinName.indexOf(authName) === 0 || authName.indexOf(pinName) === 0)) {
-      el.textContent = rest
-    } else {
-      el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(rest)
-    }
+    el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(rest)
   } else {
     el.textContent = t
   }
