@@ -169,3 +169,46 @@ test('maxLiveViews: значение из конфига, дефолт 8, мус
   const c4 = sandbox(['maxLiveViews'], { state: { cfg: { maxLiveViews: '0' } } })
   assert.equal(c4.maxLiveViews(), 8)
 })
+
+// ---------- unreadDeltaFor ----------
+test('unreadDeltaFor: прирост новых сообщений от сохранённой базы', () => {
+  const c = sandbox(['unreadDeltaFor'], { state: { unreadBaseC: { chat1: 5 }, unreadBaseM: { chat1: 1 } } })
+  assert.deepEqual(JSON.parse(JSON.stringify(c.unreadDeltaFor('chat1', 9, 2))), { dC: 4, dM: 1, dU: true })
+})
+
+test('unreadDeltaFor: без базы первый замер не считается новым', () => {
+  const c = sandbox(['unreadDeltaFor'], { state: { unreadBaseC: {}, unreadBaseM: {} } })
+  assert.deepEqual(JSON.parse(JSON.stringify(c.unreadDeltaFor('chat1', 9, 2))), { dC: 0, dM: 0, dU: false })
+})
+
+test('unreadDeltaFor: уменьшение запаса не даёт отрицательной дельты', () => {
+  const c = sandbox(['unreadDeltaFor'], { state: { unreadBaseC: { chat1: 10 }, unreadBaseM: { chat1: 3 } } })
+  assert.deepEqual(JSON.parse(JSON.stringify(c.unreadDeltaFor('chat1', 4, 0))), { dC: 0, dM: 0, dU: false })
+})
+
+// ---------- shouldBumpLiveAct ----------
+test('shouldBumpLiveAct: старый чат с ростом непрочитанных не поднимается', () => {
+  const c = sandbox(['shouldBumpLiveAct'])
+  assert.equal(c.shouldBumpLiveAct(0, 5, 1000, 1000), false)
+})
+
+test('shouldBumpLiveAct: новое сообщение с ростом времени поднимает', () => {
+  const c = sandbox(['shouldBumpLiveAct'])
+  assert.equal(c.shouldBumpLiveAct(0, 5, 1000, 2000), true)
+})
+
+// ---------- isUsernameFallbackName ----------
+test('isUsernameFallbackName: username-фолбэк не считается именем чата', () => {
+  const c = sandbox(['isUsernameFallbackName'])
+  assert.equal(c.isUsernameFallbackName('https://web.telegram.org/k/#@Astra_lin', 'Astra lin'), true)
+  assert.equal(c.isUsernameFallbackName('https://web.telegram.org/k/#@Astra_lin', 'Астра Кам Александр Абдурахимов'), false)
+  assert.equal(c.isUsernameFallbackName('https://web.telegram.org/k/#-123', 'Astra lin'), false)
+})
+
+// ---------- shouldAutoRenameTitle ----------
+test('shouldAutoRenameTitle: пользовательское название TG не перезаписывается', () => {
+  const c = sandbox(['shouldAutoRenameTitle', 'isUsernameFallbackName'])
+  assert.equal(c.shouldAutoRenameTitle('tg', 'Astra Linux', 'https://web.telegram.org/k/#@Astra_lin'), false)
+  assert.equal(c.shouldAutoRenameTitle('tg', 'Astra lin', 'https://web.telegram.org/k/#@Astra_lin'), true)
+  assert.equal(c.shouldAutoRenameTitle('mm', 'Любое', 'https://im.astralinux.ru/astralinux/channels/x'), true)
+})
