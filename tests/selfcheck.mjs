@@ -433,6 +433,12 @@ async function checkRows(sh) {
     return { max: rows.length, withPreview: withPreview.length, withAuthor: withAuthor.length }
   })()`)
   pass('MAX: превью содержит автора (группы/лички по мере выучивания)', maxAuth && maxAuth.withAuthor > 0, maxAuth)
+  const maxNumeric = await ev(sh, `(() => {
+    const rows = [...document.querySelectorAll('.chat-list .chat-row')].filter(r => (r.querySelector('.chat-row-src') || {}).textContent === 'MAX')
+    const bad = rows.filter(r => /^\\d+$/.test(((r.querySelector('.chat-row-preview') || {}).textContent || '').trim())).map(r => (r.querySelector('.chat-row-title') || {}).textContent || '')
+    return { bad: bad.length, список: bad.slice(0, 4) }
+  })()`)
+  pass('MAX: превью не заменяется числом непрочитанных', maxNumeric && maxNumeric.bad === 0, maxNumeric)
   // MM: у каждого закреплённого чата должно быть последнее сообщение из API
   const mmChk = await ev(sh, `(() => {
     const pins = (state.cfg.pinned || []).filter(p => /im\.astralinux\.ru/.test(String(p.url || '')))
