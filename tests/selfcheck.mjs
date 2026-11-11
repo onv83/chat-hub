@@ -302,7 +302,7 @@ async function checkRows(sh) {
       const pinO = state.cfg.pinned.find(p => p.id === row.dataset.pin)
       const isDM = !!(pinO && /#@/.test(String(pinO.url || '')))
       const hasData = !!(state.lastMsgPreview || {})[row.dataset.pin]
-      if (!isDM && prevText && title && prevText.indexOf(title) === 0 && prevText.length > title.length) out.bad.push('дубль имени в превью (группа): ' + title.slice(0, 14))
+      if (prevText && title && prevText.indexOf(title) === 0 && prevText.length > title.length) out.bad.push('дубль имени в превью: ' + title.slice(0, 14))
       if (!prevText && hasData) out.bad.push('превью не отображено при данных: ' + title.slice(0, 14))
       if ((src === 'Mattermost' || src === 'Telegram') && !isDM && prevText && prevText.indexOf(':') < 0) out.noAuth = (out.noAuth || 0) + 1
     }

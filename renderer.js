@@ -10,6 +10,7 @@ const state = {
   combinedBuilt: false,
   liveAct: {},         // pinId -> Date.now() всплеска активности (пришли сообщения)
   lastMsgPreview: {},  // pinId -> текст последнего сообщения (превью в строке)
+  msgAuth: {},         // pinId -> {text,out,name}: авторство, выученное из открытого чата
   rankAct: {},         // pinId -> позиция строки в списке мессенджера (меньше = свежее; 9999 = не в списке)
   prevUnread: {},      // pinId -> прошлое число непрочитанных (детект новых сообщений)
   lastUsed: {},        // pinId -> Date.now() последнего открытия (для вытеснения неактивных вьюх)
@@ -1011,7 +1012,16 @@ function makeChatRow(p) {
 // Превью строки: «Автор: текст» — автор жирным (до первого двоеточия)
 function setRowPreview(el, text) {
   if (!el) return
-  const t = String(text || '')
+  let t = String(text || '')
+  // защита от дубля: текст, начинающийся с названия чата, показываем без него
+  const rowEl = el.closest('.chat-row')
+  if (rowEl) {
+    const pin = (state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin)
+    if (pin && pin.title) {
+      const pre = String(pin.title).trim() + ': '
+      if (t.indexOf(pre) === 0) t = t.slice(pre.length)
+    }
+  }
   if (el.dataset.txt === t) return
   el.dataset.txt = t
   // автор до первого двоеточия — жирным; пробел после двоеточия НЕ обязателен (ydx даёт «Имя:Текст»)
@@ -1024,7 +1034,14 @@ function setRowPreview(el, text) {
     if (j > 0 && j < 40) { i = j; rest = t.slice(j + 1).trimStart() }
   }
   if (i > 0 && i < 40) {
-    el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(rest)
+    // автор совпадает с названием чата (входящее в личке) — не показываем его второй раз
+    const authName = String(t.slice(0, i)).trim().toLowerCase()
+    const pinName = rowEl ? String(((state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin) || {}).title || '').trim().toLowerCase() : ''
+    if (authName && pinName && (authName === pinName || pinName.indexOf(authName) === 0)) {
+      el.textContent = rest
+    } else {
+      el.innerHTML = '<b>' + escapeHtml(t.slice(0, i + 1)) + '</b> ' + escapeHtml(rest)
+    }
   } else {
     el.textContent = t
   }
@@ -1995,14 +2012,23 @@ async function pollUnread() {
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
       // превью последнего сообщения: TG/MAX/Телемост — из экстракторов, MM — из API постов
-      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2);  state.lastMsgPreview[r.id] = pv
-      if (r.svc === 'tg' && state.pinViews && state.pinViews[r.id]) {
+      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2)
+      const ac = (state.msgAuth || {})[r.id]
+      if (ac && ac.text && pv.indexOf(ac.text) >= 0) {
+        const isDMc = pinA && /#@/.test(String(pinA.url || ''))
+        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : '')) + ac.text
+      }
+      state.lastMsgPreview[r.id] = pv
+      if (svc.id === 'tg' && state.pinViews && state.pinViews[r.id]) {
         try {
           const lb = await grabViewLastMsg(state.pinViews[r.id], r.url)
           if (lb && lb.text) {
             let pre = lb.text
             const pinG = state.cfg.pinned.find(p => p.id === r.id)
-            if (pinG && pinG.title && !/#@/.test(String(pinG.url || '')) && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
+            // текст, начинающийся с названия чата, — дубль (название уже строкой выше)
+            if (pinG && pinG.title && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
+            state.msgAuth = state.msgAuth || {}
+            state.msgAuth[r.id] = { text: pre, out: lb.out, name: lb.name }
             const isDMp = pinG && /#@/.test(String(pinG.url || ''))
             let auth = ''
             if (lb.out) auth = 'Вы: '
@@ -2278,14 +2304,21 @@ async function mmLastPosts() {
       }
       state.mmPinCounts = state.mmPinCounts || {}
       state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
-      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2);  state.lastMsgPreview[r.id] = pv
-      if (r.svc === 'tg' && state.pinViews && state.pinViews[r.id]) {
+      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2)
+      const ac = (state.msgAuth || {})[r.id]
+      if (ac && ac.text && pv.indexOf(ac.text) >= 0) {
+        const isDMc = pinA && /#@/.test(String(pinA.url || ''))
+        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : '')) + ac.text
+      }
+      state.lastMsgPreview[r.id] = pv
+      if (svc.id === 'tg' && state.pinViews && state.pinViews[r.id]) {
         try {
           const lb = await grabViewLastMsg(state.pinViews[r.id], r.url)
           if (lb && lb.text) {
             let pre = lb.text
             const pinG = state.cfg.pinned.find(p => p.id === r.id)
-            if (pinG && pinG.title && !/#@/.test(String(pinG.url || '')) && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
+            // текст, начинающийся с названия чата, — дубль (название уже строкой выше)
+            if (pinG && pinG.title && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
             state.lastMsgPreview[r.id] = (lb.out ? 'Вы: ' : ((lb.name || (pinG && pinG.title) || '') + ': ')) + pre
           }
         } catch (e) {}
@@ -2372,7 +2405,25 @@ async function grabViewLastMsg(wv, pinUrl) {
   const want = mm ? mm[1] : ''
   if (!want) return null
   try {
-    return await wv.executeJavaScript()
+    return await wv.executeJavaScript(`(() => {
+      const want = ${JSON.stringify(want)}
+      const cur = String(location.hash || '').replace(/^#/, '')
+      if (cur !== want) return null
+      const bs = [...document.querySelectorAll('.bubbles .bubble')]
+      const b = bs[bs.length - 1]
+      if (!b) return null
+      const out = b.classList.contains('is-out')
+      const nm = b.querySelector('.name, .peer-title')
+      let tx = ''
+      const mEl = b.querySelector('.message, .translatable-message')
+      if (mEl) {
+        const cl = mEl.cloneNode(true)
+        cl.querySelectorAll('.time, .message-time, .reactions, .reaction, .tail').forEach(x => x.remove())
+        tx = String(cl.textContent || '').trim().slice(0, 160)
+      }
+      if (!tx) return null
+      return { out: out, name: nm ? String(nm.textContent || '').trim().slice(0, 40) : '', text: tx }
+    })()`)
   } catch (e) { return null }
 }
 
