@@ -286,7 +286,7 @@ function ensureKeys(cfg) {
     for (const k of Object.keys(state.lastMsgPreview)) {
       const pv = String(state.lastMsgPreview[k] || '')
       if (pv && !tgPreviewAuthored(pv)) {
-        const pinT = state.cfg.pinned.find(p => p.id === k)
+        const pinT = state.cfg.pinned.find(p => p.id === k && /#@/.test(String(p.url || '')))
         if (pinT && pinT.title) state.lastMsgPreview[k] = String(pinT.title) + ': ' + pv
       }
     }
@@ -303,6 +303,14 @@ function ensureKeys(cfg) {
     state.liveAct = {}
     state.prevUnread = {}
     if (state.cfg.activity) state.cfg.activity.liveAct = {}
+    try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
+  }
+  // сброс №3: старые сохранённые превью содержат удвоенные названия/неверных авторов —
+  // чистим, пусть пересоберутся с мессенджеров по новым правилам
+  if (!state.cfg.actReset3) {
+    state.cfg.actReset3 = true
+    state.lastMsgPreview = {}
+    if (state.cfg.activity) state.cfg.activity.lastMsgPreview = {}
     try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
   }
   // сброс №2: первый запуск после фикса успел заново испортить liveAct
@@ -1964,7 +1972,7 @@ async function pollUnread() {
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
       state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
       // превью последнего сообщения: TG/MAX/Телемост — из экстракторов, MM — из API постов
-      if (r.preview) { let pv = String(r.preview); if (!tgPreviewAuthored(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
+      if (r.preview) { let pv = String(r.preview); if (!tgPreviewAuthored(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id && /#@/.test(String(p.url || ''))); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       if (r.time) {
@@ -2232,7 +2240,7 @@ async function mmLastPosts() {
       }
       state.mmPinCounts = state.mmPinCounts || {}
       state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
-      if (r.preview) { let pv = String(r.preview); if (!tgPreviewAuthored(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
+      if (r.preview) { let pv = String(r.preview); if (!tgPreviewAuthored(pv)) { const pinT = state.cfg.pinned.find(p => p.id === r.id && /#@/.test(String(p.url || ''))); if (pinT && pinT.title) pv = String(pinT.title) + ": " + pv } state.lastMsgPreview[r.id] = pv }
     }
   } catch (e) {}
 }
@@ -2579,7 +2587,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (count > 0 || row.unreadTitle) unread = true
       if (f.needAvatar) avatar = await __grabAvatar(row.el)
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? (row.preview && /^[^:]{2,30}:/.test(String(row.preview)) && !/^https?:/i.test(String(row.preview)) ? row.preview : (String(f.title || '') + ': ' + String(row.preview || '')).trim()) : '' })
+    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? ((row.preview || '')) : '' })
   }
   // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
   // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
