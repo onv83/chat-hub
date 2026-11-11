@@ -80,6 +80,35 @@ API; Telegram — см. «Индексация Telegram» в ⚙ Настрой�
   чатов времени может не быть, они стоят ниже по порядку добавления. Mattermost/MAX/Телемост
   читаются пассивно из своих списков и всегда актуальны.
 
-## Лицензия
+## Лицензия и участие в разработке
 
-[Apache License 2.0](LICENSE). © 2026 Николай Опарин — см. [NOTICE](NOTICE).
+ChatHub распространяется по условиям [Apache License 2.0](LICENSE). Изменения, намеренно
+предложенные для включения в проект, принимаются на условиях той же лицензии, если явно
+не указано иное. См. также [NOTICE](NOTICE).
+
+<details>
+<summary>📸 Скриншоты</summary>
+
+**Избранное (главный экран)**
+
+![Избранное — Mattermost](docs/screens/favorites-mm.png)
+
+| Telegram | Телемост |
+|---|---|
+| ![Избранное — Telegram](docs/screens/favorites-tg.png) | ![Избранное — Телемост](docs/screens/favorites-ydx.png) |
+
+| MAX | Сборная + MAX |
+|---|---|
+| ![Избранное — MAX](docs/screens/favorites-max.png) | ![Сборная + MAX](docs/screens/service-max.png) |
+
+**Сервисные вкладки**
+
+| Mattermost | Telegram |
+|---|---|
+| ![Mattermost](docs/screens/service-mm.png) | ![Telegram](docs/screens/service-tg.png) |
+
+| MAX | Телемост |
+|---|---|
+| ![MAX](docs/screens/service-max.png) | ![Телемост](docs/screens/service-ydx.png) |
+
+</details>

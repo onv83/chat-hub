@@ -4,7 +4,7 @@
   "version": "0.3.0",
   "description": "Все мессенджеры в одном окне: Mattermost, Telegram, MAX, Телемост + сборная вкладка с закреплёнными чатами",
   "main": "main.js",
-  "author": "Николай Опарин",
+  "author": "ChatHub contributors",
   "license": "Apache-2.0",
   "scripts": {
     "start": "electron .",
