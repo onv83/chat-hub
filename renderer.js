@@ -305,6 +305,14 @@ function ensureKeys(cfg) {
     if (state.cfg.activity) state.cfg.activity.liveAct = {}
     try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
   }
+  // сброс №5: в кэше pid были отравленные записи (два разных чата получали
+  // один peer-id из нечёткого матча и одинаковые аватарки) — чистим кэши
+  if (!state.cfg.actReset5) {
+    state.cfg.actReset5 = true
+    state.tgPeerOf = {}
+    state.pinAvatars = {}
+    try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
+  }
   // сброс №4: авторство последних сообщений теперь берётся из открытого чата
   if (!state.cfg.actReset4) {
     state.cfg.actReset4 = true
@@ -1874,7 +1882,7 @@ async function pollUnread() {
           for (const f of r.favs) {
             // отравленный/устаревший pid — чистим кэш и матчим заново по названию
             if (f.pidStale) { try { delete state.tgPeerOf[f.id] } catch (e) {} ; continue }
-            if (f.pid && (!state.tgPeerOf[f.id] || String(state.tgPeerOf[f.id]) === String(f.pid))) {
+            if (f.pid && f.exact && (!state.tgPeerOf[f.id] || String(state.tgPeerOf[f.id]) === String(f.pid))) {
               const pin = state.cfg.pinned.find(p => p.id === f.id)
               if (pin && tgPidSafe(pin, f.pid, f.rowTitle)) state.tgPeerOf[f.id] = f.pid
             }
@@ -2576,6 +2584,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
     // затем числовой из URL (#-5505486531); #@имя — по названию строки
     const pid = f.pid || (String(f.url).match(/#(-?\d+)/) || [])[1] || ''
     let row = pid ? (rows.find(x => x.pid === pid) || null) : null
+    let rowExact = !!row // pid = точная идентичность: аватар/совпадение надёжны
     // Самоочистка отравленного pid-кэша: строка по pid найдена, но заголовок
     // не пересекается с заголовком пина (ни одного слова >= 4 символов) и pid
     // не из URL пина — кэш устарел/ошибочен, строку не засчитываем
@@ -2589,12 +2598,13 @@ async function __chatHubTgUnread(favs, allowScroll) {
         const ws = String(f.title || '').split(/[\s|,/()]+/).map(w => ns(w)).filter(w => w.length >= 4 && !stopW.has(w))
         const rn = ns(row.title)
         const ok = !!rn && ws.some(w => rn.indexOf(w) >= 0)
-        if (!ok) { pidStale = true; row = null }
+        if (!ok) { pidStale = true; row = null; rowExact = false }
       }
     }
     if (!row && f.title) {
       const ft = String(f.title).trim()
       let cands = rows.filter(x => x.title.trim() === ft)
+      const exactOnly = cands.length > 0
       if (!cands.length) {
         const nt = norm(ft)
         // прямое вхождение (пин ⊂ строка) — обрезанные заголовки пинов;
@@ -2609,7 +2619,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
         const words = ft.split(/[\s|,/()]+/).map(w => norm(w)).filter(w => w.length >= 3 && !stop.has(w))
         if (words.length) cands = rows.filter(x => { const n = norm(x.title); return n && words.every(w => n.indexOf(w) >= 0) })
       }
-      if (cands.length === 1) row = cands[0]
+      if (cands.length === 1) { row = cands[0]; rowExact = exactOnly }
       else if (cands.length > 1) {
         cands.sort((a, b) => b.title.length - a.title.length)
         const bn = norm(cands[0].title)
@@ -2620,7 +2630,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
     // нет), заголовок пина пользовательский — матчу строку по её href
     if (!row) {
       const uname = (String(f.url).match(/#(@[-\w]+)/) || [])[1]
-      if (uname) row = rows.find(x => x.u === '#' + uname) || null
+      if (uname) { row = rows.find(x => x.u === '#' + uname) || null; if (row) rowExact = true }
     }
     let unread = false
     let count = 0
@@ -2636,9 +2646,11 @@ async function __chatHubTgUnread(favs, allowScroll) {
       count = parseN(row.unreadTxt)
       mentions = row.mentions
       if (count > 0 || row.unreadTitle) unread = true
-      if (f.needAvatar) avatar = await __grabAvatar(row.el)
+      // аватар только при точном совпадении строки: нечёткий матч давал
+      // чужое фото (два чата одного человека получали одну аватарку)
+      if (f.needAvatar && rowExact) avatar = await __grabAvatar(row.el)
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? ((row.preview || '')) : '' })
+    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, exact: rowExact, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? ((row.preview || '')) : '' })
   }
   // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
   // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
