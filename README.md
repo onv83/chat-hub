@@ -82,4 +82,4 @@ API; Telegram — см. «Индексация Telegram» в ⚙ Настрой�
 
 ## Лицензия
 
-[Apache License 2.0](LICENSE). Copyright 2026 Lenovo — см. [NOTICE](NOTICE).
+[Apache License 2.0](LICENSE). © 2026 Николай Опарин — см. [NOTICE](NOTICE).
