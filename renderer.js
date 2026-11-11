@@ -937,7 +937,7 @@ function makeChatRow(p) {
   ttl.title = p.url
   row.querySelector('.chat-row-preview').textContent = state.lastMsgPreview[p.id] || svcName
   const timeEl = row.querySelector('.row-time')
-  timeEl.textContent = state.lastMsgText[p.id] || ''
+  timeEl.textContent = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id]) : ''
   timeEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
   row.onclick = (e) => { if (!e.target.closest('.icon-btn') && !e.target.closest('.row-menu')) selectChat(p.id) }
   // меню действий ⋮ (как контекстное меню в MAX): закрепить/открепить, удалить
@@ -1918,7 +1918,7 @@ async function pollUnread() {
     const svc = state.cfg.services.find(s => s.id === p.serviceId)
     const tEl = row.querySelector('.row-time')
     if (tEl) {
-      const want = state.lastMsgText[p.id] || ''
+      const want = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id]) : ''
       if (tEl.textContent !== want) tEl.textContent = want
       tEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
     }
@@ -2002,6 +2002,23 @@ function fmtChatWhen(ms, dayOnly) {
   let s = pad(d.getDate()) + '.' + pad(d.getMonth() + 1)
   if (d.getFullYear() !== n.getFullYear()) s += '.' + String(d.getFullYear()).slice(-2)
   if (!dayOnly) s += ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+  return s
+}
+
+// Время строки избранного: сегодня — ЧЧ:ММ, вчера — «вчера», раньше — ДД.ММ(.ГГ).
+// Сортировка при этом идёт по ТОЧНОМУ времени (lastMsgAt), не по этой строке.
+function fmtRowTime(ms) {
+  if (!ms) return ''
+  const d = new Date(ms)
+  const n = new Date()
+  const pad = x => ('0' + x).slice(-2)
+  if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) {
+    return pad(d.getHours()) + ':' + pad(d.getMinutes())
+  }
+  const y = new Date(n); y.setDate(y.getDate() - 1)
+  if (d.getFullYear() === y.getFullYear() && d.getMonth() === y.getMonth() && d.getDate() === y.getDate()) return 'вчера'
+  let s = pad(d.getDate()) + '.' + pad(d.getMonth() + 1)
+  if (d.getFullYear() !== n.getFullYear()) s += '.' + String(d.getFullYear()).slice(-2)
   return s
 }
 
