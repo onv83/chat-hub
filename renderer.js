@@ -1746,6 +1746,12 @@ async function pollUnread() {
     let unreadChats = res.dmUnread ? 1 : 0
     let countSum = 0
     for (const r of (res.favs || [])) {
+      // MM: API-числа (msg_count канала) важнее сайдбарного бейджа-упоминаний
+      if (svc.id === 'mm' && state.mmPinCounts && state.mmPinCounts[r.id]) {
+        const mp = state.mmPinCounts[r.id]
+        if (mp.count > 0) { r.count = mp.count; r.unread = true }
+        if (mp.mentions > 0) { r.mentions = mp.mentions; r.unread = true }
+      }
       const row = document.querySelector('.chat-row[data-pin="' + r.id + '"]')
       if (row) setRowBadge(row, r)
       // аватарка чата, пойманная экстрактором → кэш и в строку (до
@@ -1951,6 +1957,8 @@ async function mmLastPosts() {
       '   if (uidCache[u]) continue;' +
       '   try { const usr = await fetch("/api/v4/users/username/" + encodeURIComponent(u), { headers: H }).then(r => r.json()); if (usr && usr.id) uidCache[u] = usr.id } catch (e) {}' +
       ' }' +
+      ' const memMap = {};' +
+      ' for (const tm of teams) { try { const mm2 = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels/members", { headers: H }).then(r => r.json()); if (Array.isArray(mm2)) for (const mm3 of mm2) memMap[mm3.channel_id] = mm3 } catch (e) {} }' +
       ' const res = [];' +
       ' for (const j of jobs) {' +
       '   const mm2 = String(j.url).match(/\\/(channels|messages)\\/([^/?#]+)/);' +
@@ -1960,7 +1968,7 @@ async function mmLastPosts() {
       '     const uid = uidCache[mm2[2].slice(1)];' +
       '     if (uid) ch = chs.find(c => c.type === "D" && String(c.name).split("__").indexOf(uid) >= 0);' +
       '   } else { ch = chs.find(c => (c.type === "O" || c.type === "P") && c.name === mm2[2]) }' +
-      '   if (ch && ch.last_post_at) res.push({ id: j.id, at: ch.last_post_at });' +
+      '   if (ch && ch.last_post_at) { const mem = memMap[ch.id] || {}; res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0 }); }' +
       ' }' +
       ' return JSON.stringify({ uidCache: uidCache, res: res });' +
       ' } catch (e) { return "" }' +
@@ -1974,6 +1982,10 @@ async function mmLastPosts() {
         state.lastMsgAt[r.id] = r.at
         state.lastMsgText[r.id] = fmtChatWhen(r.at, false)
       }
+      // непрочитанные из API (ChannelMember.msg_count/mention_count): в строке
+      // избранного — число новых сообщений канала, а не только @упоминания
+      state.mmPinCounts = state.mmPinCounts || {}
+      state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
     }
   } catch (e) {}
 }
