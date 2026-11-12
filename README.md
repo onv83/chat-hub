@@ -4,8 +4,6 @@ Electron-обёртка над веб-версиями мессенджеров 
 плюс «сборная вкладка» — классический мессенджер: слева общий список избранных чатов из всех
 мессенджеров, справа содержимое выбранного чата.
 
-![ChatHub — «★ Сборная»: избранное слева, чат справа, тред в правой панели](docs/screenshot.png)
-
 ## Запуск
 
     npm install   # один раз
@@ -89,31 +87,8 @@ Mattermost получает время из API. Telegram может восст�
 
 ChatHub распространяется по условиям [Apache License 2.0](LICENSE). Изменения, намеренно
 предложенные для включения в проект, принимаются на условиях той же лицензии, если явно
-не указано иное. См. также [NOTICE](NOTICE).
-
-<details>
-<summary>📸 Скриншоты</summary>
-
-**Избранное (главный экран)**
-
-![Избранное — Mattermost](docs/screens/favorites-mm.png)
-
-| Telegram | Телемост |
-|---|---|
-| ![Избранное — Telegram](docs/screens/favorites-tg.png) | ![Избранное — Телемост](docs/screens/favorites-ydx.png) |
-
-| MAX | Сборная + MAX |
-|---|---|
-| ![Избранное — MAX](docs/screens/favorites-max.png) | ![Сборная + MAX](docs/screens/service-max.png) |
-
-**Сервисные вкладки**
-
-| Mattermost | Telegram |
-|---|---|
-| ![Mattermost](docs/screens/service-mm.png) | ![Telegram](docs/screens/service-tg.png) |
-
-| MAX | Телемост |
-|---|---|
-| ![MAX](docs/screens/service-max.png) | ![Телемост](docs/screens/service-ydx.png) |
-
-</details>
+не указано иное. См. также [NOTICE](NOTICE).
+
+## Скриншот
+
+[Открыть скриншот приложения](docs/screenshot.png)
