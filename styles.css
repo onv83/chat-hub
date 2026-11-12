@@ -155,7 +155,13 @@ body.split-dragging webview { pointer-events: none !important; }
 .chat-list:not(:hover)::-webkit-scrollbar-thumb { background: transparent; }
 .chat-row { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 9px; cursor: pointer; position: relative; }
 .chat-row:hover { background: var(--bg); }
-.chat-row.selected { background: rgba(88, 101, 242, .25); }
+/* The open chat keeps a strong accent even when another row is hovered. */
+.chat-row.selected, .chat-row.selected:hover { background: var(--accent); color: #fff; }
+.chat-row.selected .chat-row-src,
+.chat-row.selected .chat-row-preview,
+.chat-row.selected .row-time { color: rgba(255, 255, 255, .88); }
+.chat-row.selected .chat-row-preview b { color: #fff; }
+.chat-row.selected:hover .icon-btn { background: var(--accent); color: #fff; }
 .chat-row-text { flex: 1; min-width: 0; }
 .chat-row-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-line1 { display: flex; align-items: baseline; gap: 6px; }
@@ -216,6 +222,16 @@ body.split-dragging webview { pointer-events: none !important; }
 .view-title:hover { color: var(--text); text-decoration: underline; }
 .view-svc { color: var(--muted); font-size: 12px; flex: 0 0 auto; }
 .chat-view-stack { flex: 1; position: relative; min-height: 0; }
+.chat-placeholder {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px; overflow: auto; text-align: center;
+  background: var(--bg); color: var(--text); user-select: none;
+}
+.chat-placeholder-logo { width: min(256px, 65%, 40vh); height: auto; object-fit: contain; }
+.chat-placeholder-title { margin: 0; font-size: clamp(24px, 3vw, 36px); font-weight: 700; letter-spacing: .02em; }
+.chat-placeholder-tagline { margin: 0; color: var(--muted); font-size: 15px; }
+.chat-list-empty { padding: 18px; color: var(--muted); }
 /* скрытие через opacity (как .tabpane выше): не display:none (размер теряется)
    и не visibility:hidden (гость не получает кадров — виртуальный список TG пуст).
    Активная вьюха поверх остальных через z-index. */

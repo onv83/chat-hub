@@ -1,7 +1,8 @@
 // ChatHub — все мессенджеры в одном окне + сборная вкладка с закреплёнными чатами
-const { app, BrowserWindow, ipcMain, session, shell, webContents, Menu, nativeTheme } = require('electron')
+const { app, BrowserWindow, ipcMain, session, shell, webContents, Menu, nativeTheme, dialog } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const { installGuestNotificationPolicy } = require('./guest-notification-policy')
 
 // Корп. хосты не должны уходить в системный прокси, если он включён
 app.commandLine.appendSwitch(
@@ -55,12 +56,75 @@ const DEFAULT_CONFIG = {
   pinned: []
 }
 
+let configTempSequence = 0
+let configWriteBlocked = false
+const configNotices = new Set()
+const configObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+function validateConfig(value) {
+  const invalid = () => { throw new Error('Некорректный формат настроек; сохранение отменено.') }
+  if (!configObject(value)) invalid()
+  for (const key of ['services', 'pinned']) {
+    if (!(key in value)) continue
+    if (!Array.isArray(value[key])) invalid()
+    const ids = new Set()
+    for (const item of value[key]) {
+      if (!configObject(item) || typeof item.id !== 'string' || !item.id || ids.has(item.id)) invalid()
+      ids.add(item.id)
+      const required = key === 'services' ? ['url'] : ['serviceId', 'url']
+      for (const field of required) if (typeof item[field] !== 'string' || !item[field]) invalid()
+      for (const field of ['name', 'title', 'partition', 'proxy', 'key']) {
+        if (field in item && typeof item[field] !== 'string') invalid()
+      }
+    }
+  }
+  for (const key of ['columnCss', 'zoom', 'activity']) {
+    if (key in value && !configObject(value[key])) invalid()
+  }
+  if (value.columnCss && Object.values(value.columnCss).some(v => typeof v !== 'string')) invalid()
+  if (value.zoom && Object.values(value.zoom).some(v => !Number.isFinite(v) || v <= 0)) invalid()
+  if ('windowState' in value && value.windowState !== null) {
+    if (!configObject(value.windowState)) invalid()
+    for (const key of ['x', 'y', 'width', 'height']) {
+      if (key in value.windowState && (!Number.isFinite(value.windowState[key]) || (['width', 'height'].includes(key) && value.windowState[key] <= 0))) invalid()
+    }
+    if ('maximized' in value.windowState && typeof value.windowState.maximized !== 'boolean') invalid()
+  }
+  return value // Unknown keys are intentionally retained, including nested fields.
+}
+
 function loadConfig() {
-  let saved = null
+  let saved, original, missing = false
   try {
-    saved = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))
-  } catch {
-    return JSON.parse(JSON.stringify(DEFAULT_CONFIG))
+    original = fs.readFileSync(CONFIG_PATH, 'utf8')
+    saved = validateConfig(JSON.parse(original))
+  } catch (error) {
+    missing = error.code === 'ENOENT'
+    let backupText
+    try {
+      backupText = fs.readFileSync(CONFIG_PATH + '.bak', 'utf8')
+      saved = validateConfig(JSON.parse(backupText))
+    } catch (backupError) {
+      // Only a truly new profile may autosave defaults. Corruption/read errors
+      // must never turn an automatic renderer/window save into a factory reset.
+      configWriteBlocked = !(missing && backupError.code === 'ENOENT')
+      if (configWriteBlocked) reportConfigProblem('Настройки не прочитаны. Исходные файлы не изменены; сохранение отключено. Восстановите config.json из исправной копии и перезапустите ChatHub.')
+      return JSON.parse(JSON.stringify(DEFAULT_CONFIG))
+    }
+    try {
+      if (!missing) {
+        if (original === undefined) throw new Error('unreadable')
+        // Exclusive archive: never replace an earlier recovery artifact.
+        const archive = CONFIG_PATH + '.invalid-' + Date.now() + '-' + process.pid + '-' + (++configTempSequence)
+        fs.copyFileSync(CONFIG_PATH, archive, fs.constants.COPYFILE_EXCL)
+        const fd = fs.openSync(archive, 'r+')
+        try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+      }
+      atomicConfigWrite(CONFIG_PATH, backupText)
+      reportConfigProblem('Настройки восстановлены из config.json.bak. Повреждённый исходный файл, если он был доступен, сохранён отдельно как config.json.invalid-… .')
+    } catch {
+      configWriteBlocked = true
+      reportConfigProblem('Загружена резервная копия настроек, но восстановить основной файл не удалось. Исходные файлы сохранены; запись отключена до исправления config.json и перезапуска ChatHub.')
+    }
   }
   const base = JSON.parse(JSON.stringify(DEFAULT_CONFIG))
   const merged = { ...base, ...saved }
@@ -82,9 +146,51 @@ let config = loadConfig()
 // должны подхватывать светлый/тёмный режим сразу при старте
 try { nativeTheme.themeSource = config.theme === 'light' ? 'light' : 'dark' } catch {}
 
-function persistConfig() {
-  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2))
+function reportConfigProblem(message) {
+  // Never expose parser errors, paths, configuration values or OS error text.
+  if (configNotices.has(message)) return
+  configNotices.add(message)
+  console.error('[ChatHub config] ' + message)
+  try { dialog.showErrorBox('ChatHub — настройки', message) } catch {}
+}
+
+function atomicConfigWrite(target, text) {
+  const temp = target + '.tmp-' + process.pid + '-' + (++configTempSequence)
+  let fd, owned = false
+  try {
+    fd = fs.openSync(temp, 'wx', 0o600)
+    owned = true
+    fs.writeFileSync(fd, text, 'utf8')
+    fs.fsyncSync(fd)
+    fs.closeSync(fd)
+    fd = undefined
+    // Same-directory replacement: never unlink/truncate the committed file.
+    fs.renameSync(temp, target)
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd) } catch {} }
+    if (owned) { try { fs.unlinkSync(temp) } catch {} }
+  }
+}
+
+function persistConfig(next = config) {
+  try {
+    if (configWriteBlocked) throw new Error('read-only recovery')
+    validateConfig(next)
+    const text = JSON.stringify(next, null, 2)
+    validateConfig(JSON.parse(text))
+    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true })
+    let previous
+    try { previous = fs.readFileSync(CONFIG_PATH, 'utf8') } catch (e) { if (e.code !== 'ENOENT') throw e }
+    if (previous !== undefined) {
+      validateConfig(JSON.parse(previous))
+      atomicConfigWrite(CONFIG_PATH + '.bak', previous)
+    }
+    atomicConfigWrite(CONFIG_PATH, text)
+  } catch {
+    const message = 'Не удалось сохранить настройки. Предыдущий файл сохранён; изменения не записаны.'
+    reportConfigProblem(message)
+    throw new Error(message)
+  }
 }
 
 // Прокси на уровне сессии каждого мессенджера: например, Telegram
@@ -100,12 +206,24 @@ function applyServiceProxies() {
   }
 }
 
+function applyServiceNotificationPolicy() {
+  for (const svc of config.services) {
+    installGuestNotificationPolicy(session.fromPartition(svc.partition))
+  }
+}
+
 ipcMain.handle('config:get', () => config)
 ipcMain.handle('config:save', (_e, cfg) => {
+  try { validateConfig(cfg) } catch {
+    const message = 'Некорректный формат настроек; сохранение отменено.'
+    reportConfigProblem(message)
+    throw new Error(message)
+  }
   // состояние окна (windowState) управляется только main — не даём рендереру его затирать
-  if (cfg && typeof cfg === 'object') cfg.windowState = config.windowState || null
-  config = cfg
-  persistConfig()
+  const next = { ...config, ...cfg, windowState: config.windowState || null }
+  persistConfig(next)
+  config = next
+  applyServiceNotificationPolicy()
   applyServiceProxies()
   return true
 })
@@ -236,8 +354,9 @@ function createWindow() {
     saveTid = setTimeout(() => {
       try {
         const b = win.isMaximized() ? win.getNormalBounds() : win.getBounds()
-        config.windowState = { x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() }
-        persistConfig()
+        const next = { ...config, windowState: { ...config.windowState, x: b.x, y: b.y, width: b.width, height: b.height, maximized: win.isMaximized() } }
+        persistConfig(next)
+        config = next
       } catch (e) {}
     }, 400)
   }
@@ -296,6 +415,35 @@ app.on('web-contents-created', (_e, contents) => {
   })
 })
 
+// Запасной барьер против окон Телемоста, созданных НЕ через обычный
+// window.open (service worker clients.openWindow, всплывшие после reload):
+// такие окна не должны существовать вовсе — чат остаётся в webview ChatHub.
+app.on('browser-window-created', (_e, win) => {
+  const wc = win.webContents
+  // An auth window owns its callback for its entire lifetime. Subframes
+  // cannot classify (or destroy) the containing native window.
+  let authFlow = false
+  const inspectMainFrame = (url) => {
+    try {
+      const parsed = new URL(url || '')
+      if (parsed.protocol !== 'https:') return
+      const host = parsed.hostname
+      if (AUTH_HOSTS.includes(host)) authFlow = true
+      if (!authFlow && /(^|\.)telemost\.yandex\.ru$/i.test(host)) {
+        // Never persist OAuth codes, query strings or chat identifiers.
+        logOpen('block-telemost-window ' + parsed.origin)
+        try { win.destroy() } catch (e) {}
+      }
+    } catch (e) {}
+  }
+  inspectMainFrame(wc.getURL())
+  const onNavigation = (_ev, url, _inPlace, isMainFrame) => {
+    if (isMainFrame === true) inspectMainFrame(url)
+  }
+  wc.on('did-start-navigation', onNavigation)
+  wc.on('did-redirect-navigation', onNavigation)
+})
+
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
@@ -310,13 +458,10 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     // скрываем штатное меню Electron (File/Edit/View…) — окно полностью наше
     Menu.setApplicationMenu(null)
-    // Разрешаем мессенджерам уведомления, камеру и микрофон (Telemost-звонки и т.п.)
-    const allow = (_wc, _perm, cb) => cb(true)
-    for (const svc of config.services) {
-      try {
-        session.fromPartition(svc.partition).setPermissionRequestHandler(allow)
-      } catch {}
-    }
+    // Temporary containment: ALL guest toasts (favorites too) are blocked.
+    // Only configured ChatHub service sessions; no account setting changes.
+    // Trusted favorite message-event adapters are not yet connected.
+    applyServiceNotificationPolicy()
     applyServiceProxies()
     createWindow()
     app.on('activate', () => {
