@@ -242,6 +242,7 @@ async function checkMM(sh) {
   // фактические непрочитанные: число в строке = текущий запас, а не дельта
   const delta = await ev(sh, `(async () => {
     await pollUnread()
+    await new Promise(z => setTimeout(z, 1200)) // mmLastPosts идёт параллельно — дать API завершиться
     const hasBase = !!(state.unreadBaseC && Object.keys(state.unreadBaseC).length)
     let mismatch = 0
     const examples = []
@@ -262,7 +263,7 @@ async function checkMM(sh) {
     })
     return { hasBase, mismatch, examples }
   })()`)
-  pass('бейджи: фактические непрочитанные видны красным счётчиком', delta && delta.hasBase && delta.mismatch === 0, delta)
+  pass('бейджи: ВСЕ непрочитанные видны красным счётчиком', delta && delta.hasBase && delta.mismatch === 0, delta)
 
   // счётчик всегда на выделенном месте: левее даты/времени, в первой строке
   const badgePlace = await ev(sh, `(() => {
