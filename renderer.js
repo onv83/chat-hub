@@ -5,6 +5,7 @@
 
 const state = {
   cfg: null,
+  activePinId: '',     // session-only: restored config must never open a chat
   svcViews: {},        // serviceId -> <webview> вкладки мессенджера
   pinViews: {},        // pinId -> <webview> этого чата: гружен заранее, открытие мгновенное
   combinedBuilt: false,
@@ -102,10 +103,17 @@ function __chatHubGrabAvatar(el) {
       if (img && !img.complete) {
         await new Promise(res => {
           let done = false
-          const fin = () => { if (!done) { done = true; res() } }
+          const fin = () => {
+            if (done) return
+            done = true
+            img.removeEventListener('load', fin)
+            img.removeEventListener('error', fin)
+            clearTimeout(to)
+            res()
+          }
+          const to = setTimeout(fin, 900)
           img.addEventListener('load', fin)
           img.addEventListener('error', fin)
-          setTimeout(fin, 900)
         })
       }
       if (!img || !img.src) {
@@ -143,17 +151,25 @@ function __chatHubGrabAvatar(el) {
         const d = await new Promise(res => {
           const im = new Image()
           im.crossOrigin = 'anonymous'
-          const to = setTimeout(() => res(null), 4000)
-          im.onload = () => {
+          let done = false
+          const finish = value => {
+            if (done) return
+            done = true
             clearTimeout(to)
+            im.onload = im.onerror = null
+            res(value)
+          }
+          const to = setTimeout(() => finish(null), 4000)
+          im.onload = () => {
+            if (done) return
             try {
               const c = document.createElement('canvas')
               c.width = im.naturalWidth || 64; c.height = im.naturalHeight || 64
               c.getContext('2d').drawImage(im, 0, 0)
-              res(c.toDataURL('image/jpeg', 0.85))
-            } catch (e) { res(null) }
+              finish(c.toDataURL('image/jpeg', 0.85))
+            } catch (e) { finish(null) }
           }
-          im.onerror = () => { clearTimeout(to); res(null) }
+          im.onerror = () => finish(null)
           im.src = img.src
         })
         if (d) return d
@@ -167,6 +183,7 @@ init()
 
 async function init() {
   state.cfg = await window.hub.getConfig()
+  state.activePinId = ''
   ensureKeys(state.cfg)
   buildTabs()
   applyTheme()
@@ -182,6 +199,8 @@ async function init() {
     const id = 'svc:' + svc.id
     if (!document.querySelector('section[data-tab="' + id + '"]')) {
       document.getElementById('content').appendChild(buildSection(id, true))
+      // Очередь отбрасывает отсоединённые webview: сначала добавляем секцию в DOM.
+      enqueueLoad(state.svcViews[svc.id], initialSvcUrl(svc))
     }
   }
   document.addEventListener('click', (e) => { if (!e.target.closest('.fav-menu-wrap')) closeAllFavMenus() })
@@ -225,8 +244,8 @@ async function init() {
     }
     if (tgSearchBusy) return // не пересоздаём вьюху посреди поискового прохода
     const wv = state.svcViews.tg
-    const firstTg = state.cfg.pinned.find(p => p.serviceId === 'tg')
-    if (!wv || !firstTg) return
+    const svc = state.cfg.services.find(s => s.id === 'tg')
+    if (!wv || !svc) return
     try {
       // проба с таймаутом: замороженная вьюха не отвечает никогда — лечим как пустую
       Promise.race([
@@ -240,13 +259,8 @@ async function init() {
           tgHealVisibleEmpty++
           if (tgHealVisibleEmpty < 10) return
         } else tgHealVisibleEmpty = 0
-        if (String(wv.getURL()).indexOf('#') < 0) {
-          const pr = wv.loadURL(firstTg.url); if (pr && pr.catch) pr.catch(() => {})
-          return
-        }
         if (tgHealTries >= 3) return
         tgHealTries++
-        const svc = state.cfg.services.find(s => s.id === 'tg')
         const sec = wv.parentElement
         if (!svc || !sec) return
         const nv = document.createElement('webview')
@@ -257,7 +271,7 @@ async function init() {
         state.svcViews.tg = nv
         wv.remove()
         sec.appendChild(nv)
-        nv.setAttribute('src', firstTg.url)
+        nv.setAttribute('src', initialSvcUrl(svc))
         nv.addEventListener('dom-ready', () => { captureSvcIcon('tg', nv); updateSvcBar('tg') })
         nv.addEventListener('did-navigate-in-page', () => updateSvcBar('tg'))
         nv.addEventListener('page-title-updated', () => setTimeout(() => updateSvcBar('tg'), 400))
@@ -309,6 +323,18 @@ function initListSplitter() {
   })
 }
 
+// Never infer incoming authors from a chat title or replace preview text.
+// When either side carries identity, both must agree; legacy text-only caches
+// can enrich an exact unprefixed body, never a substring or an authored preview.
+function restorePreviewAuthor(preview, author, messageId) {
+  const text = String(preview || '')
+  if (!author || !author.text || text !== String(author.text)) return text
+  if ((messageId != null || author.messageId != null) &&
+      (messageId == null || author.messageId == null || String(messageId) !== String(author.messageId))) return text
+  const name = author.out === true ? 'Вы' : (author.out === false ? String(author.name || '').trim() : '')
+  return name ? name + ': ' + text : text
+}
+
 function ensureKeys(cfg) {
   if (!cfg.services) cfg.services = []
   if (!cfg.columnCss) cfg.columnCss = {}
@@ -317,27 +343,21 @@ function ensureKeys(cfg) {
   // П.13: восстановление накопленной активности прошлой сессии — времена
   // последних сообщений, pid-кэш TG и исчерпанность свипа переживают
   // перезапуск; список сразу отсортирован правильно, без 10 мин проходов
-  if (cfg.activity) {
-    const A = cfg.activity
+  if (!state.activityRestored) {
+    state.activityRestored = true
+    const A = cfg.activity || {}
     const merge = (dst, src) => { if (src && typeof src === 'object') for (const k of Object.keys(src)) { try { dst[k] = src[k] } catch (e) {} } }
     merge(state.lastMsgAt, A.lastMsgAt)
+    state.lastMsgDayOnly = state.lastMsgDayOnly || {}
+    merge(state.lastMsgDayOnly, A.lastMsgDayOnly)
+    state.lastMsgSource = state.lastMsgSource || {}
+    merge(state.lastMsgSource, A.lastMsgSource)
     merge(state.lastMsgText, A.lastMsgText)
     merge(state.lastMsgPreview, A.lastMsgPreview)
     merge(state.msgAuth, A.msgAuth)
-    // восстановленные превью нормализуем: авторство из чатов важнее списка
+    // The preview is authoritative; cached authors may enrich only the same message.
     for (const k of Object.keys(state.lastMsgPreview)) {
-      const ac = (state.msgAuth || {})[k]
-      if (ac && ac.text) {
-        const pinA0 = state.cfg.pinned.find(p => p.id === k)
-        const isDMx = pinA0 && (/#@/.test(String(pinA0.url || '')) || ac.dm)
-        state.lastMsgPreview[k] = (ac.out ? 'Вы: ' : (!isDMx && ac.name ? ac.name + ': ' : (isDMx && pinA0.title ? pinA0.title + ': ' : ''))) + ac.text
-        continue
-      }
-      const pv = String(state.lastMsgPreview[k] || '')
-      if (pv && !tgPreviewAuthored(pv)) {
-        const pinT = state.cfg.pinned.find(p => p.id === k && /#@/.test(String(p.url || '')))
-        if (pinT && pinT.title) state.lastMsgPreview[k] = String(pinT.title) + ': ' + pv
-      }
+      state.lastMsgPreview[k] = restorePreviewAuthor(state.lastMsgPreview[k], (state.msgAuth || {})[k])
     }
     merge(state.liveAct, A.liveAct)
     // liveAct — время сообщения, а не момент обнаружения: старые значения
@@ -352,6 +372,10 @@ function ensureKeys(cfg) {
     // рестарта первый замер принимал весь запас за базу и счётчик пропадал
     merge(state.unreadBaseC, A.unreadBaseC)
     merge(state.unreadBaseM, A.unreadBaseM)
+    for (const key of ['unreadTotals', 'unreadTotalsAt', 'unreadDots', 'svcTabTotals']) {
+      state[key] = state[key] || {}
+      merge(state[key], A[key])
+    }
     if (A.tgScrollDone) tgScrollDone = true
     console.log('[hub] активность восстановлена из конфига:', Object.keys(A.lastMsgAt || {}).length, 'времён')
   }
@@ -404,6 +428,8 @@ let actSaveTimer = 0
 function activitySnapshot() {
   return {
     lastMsgAt: { ...state.lastMsgAt },
+    lastMsgDayOnly: { ...state.lastMsgDayOnly },
+    lastMsgSource: { ...state.lastMsgSource },
     lastMsgText: { ...state.lastMsgText },
     lastMsgPreview: { ...state.lastMsgPreview },
     msgAuth: { ...state.msgAuth },
@@ -412,6 +438,10 @@ function activitySnapshot() {
     prevUnread: { ...state.prevUnread },
     unreadBaseC: { ...state.unreadBaseC },
     unreadBaseM: { ...state.unreadBaseM },
+    unreadTotals: { ...state.unreadTotals },
+    unreadTotalsAt: { ...state.unreadTotalsAt },
+    unreadDots: { ...state.unreadDots },
+    svcTabTotals: { ...state.svcTabTotals },
     tgScrollDone: !!tgScrollDone
   }
 }
@@ -463,7 +493,16 @@ function buildTabs() {
     const mbadge = document.createElement('span')
     mbadge.className = 'badge badge-m'
     b.appendChild(mbadge)
+    const cached = (state.svcTabTotals || {})[svc.id]
+    if (cached) updateBadge2(svc.id, cached.t || 0, cached.m || 0)
   }
+  let total = 0, mentions = 0
+  for (const p of state.cfg.pinned) {
+    const cached = (state.unreadTotals || {})[p.id]
+    if (cached) { total += cached.c || 0; mentions += cached.m || 0 }
+    if ((state.unreadDots || {})[p.id]) total++
+  }
+  updateBadge2('combined', total, mentions)
   mk('settings', 'Настройки')
 }
 
@@ -594,6 +633,11 @@ function activateTab(id) {
   // webk в пустой скелет, и вкладка перезагружалась прямо при клике
   const svc = state.cfg.services.find(s => 'svc:' + s.id === id)
   const wv = svc && state.svcViews[svc.id]
+  for (const serviceId of ['tg', 'max', 'ydx']) {
+    const view = state.svcViews[serviceId]
+    if (!view) continue
+    try { Promise.resolve(view.executeJavaScript('window.__hubVirtualSweepBlocked = ' + (id === 'svc:' + serviceId))).catch(() => {}) } catch {}
+  }
   if (svc && wv && !wv.dataset.loadedSrc) enqueueLoad(wv, initialSvcUrl(svc), true)
   if (id === 'settings') buildSettings(sec)
   for (const s of content.children) s.classList.toggle('visible', s.dataset.tab === id)
@@ -604,15 +648,10 @@ function activateTab(id) {
   }
 }
 
-// начальный адрес вкладки сервиса: Telegram грузим сразу глубокой ссылкой
-// на первый TG-чат избранного — корень web.telegram.org/k/ после загрузки
-// часто остаётся пустым скелетом (вьюхи пинов с адресом чата грузятся
-// корректно всегда; прерывать загрузку корня ссылкой тоже ненадёжно)
+// Автоматический старт/восстановление не должны открывать TG-чат:
+// даже скрытая вьюха по глубокой ссылке может отметить сообщения прочитанными.
 function initialSvcUrl(svc) {
-  if (svc.id === 'tg') {
-    const firstTg = state.cfg.pinned.find(p => p.serviceId === 'tg')
-    if (firstTg) return firstTg.url
-  }
+  if (svc.id === 'tg') return String(svc.url).split('#')[0]
   return svc.url
 }
 
@@ -623,7 +662,7 @@ function buildSection(id, deferSrc) {
 
   if (id === 'combined') {
     sec.innerHTML = `
-      <div class="combined hidden" id="combined-layout">
+      <div class="combined" id="combined-layout">
         <aside class="chat-list-wrap" id="chat-list-wrap">
           <div class="chat-list-head">
             <span>Избранное</span>
@@ -636,19 +675,19 @@ function buildSection(id, deferSrc) {
           </div>
           <div class="chat-list" id="chat-list"></div>
           <div class="chat-list-nores hidden" id="chat-list-nores">Ничего не найдено</div>
+          <div class="chat-list-empty hidden" id="combined-empty">Откройте вкладку мессенджера, выберите чат и нажмите «⭐ В избранное».</div>
         </aside>
         <div class="list-split" id="list-split" title="Потяните, чтобы изменить ширину списка"></div>
         <div class="chat-view">
-          <div class="view-head" id="view-head"></div>
-          <div class="chat-view-stack" id="chat-view-stack"></div>
+          <div class="view-head hidden" id="view-head"></div>
+          <div class="chat-view-stack" id="chat-view-stack">
+            <div class="chat-placeholder" id="chat-placeholder">
+              <img class="chat-placeholder-logo" src="build/icon_256.png" width="256" height="256" alt="" draggable="false">
+              <h1 class="chat-placeholder-title">ChatHub</h1>
+              <p class="chat-placeholder-tagline">Все чаты. Одно окно.</p>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="empty" id="combined-empty">
-        <div class="empty-emoji">⭐</div>
-        <h2>Сборная вкладка пока пуста</h2>
-        <p>1. Откройте вкладку мессенджера сверху и войдите (один раз — сессия сохранится).<br>
-           2. Кликните нужный чат и нажмите «⭐ В избранное».</p>
-        <p class="hint">Слева — общий список чатов, справа — содержание. Красный бейдж — новые сообщения, «@N» — тегнули сабакой.</p>
       </div>`
     return sec
   }
@@ -685,8 +724,7 @@ function buildSection(id, deferSrc) {
   wv.className = 'svc-webview'
   sec.appendChild(wv)
   state.svcViews[svc.id] = wv
-  // при предзагрузке на старте src назначает очередь — грузим вкладки по очереди
-  if (deferSrc) enqueueLoad(wv, initialSvcUrl(svc))
+  if (svc.id === 'ydx' && window.ChatHubServiceHealth) window.ChatHubServiceHealth.attach(wv, bar)
 
   // счётчик непрочитанных в заголовке вкладки — только для сервисов без
   // собственного экстрактора (у остальных считаем сами, по избранному)
@@ -917,33 +955,40 @@ function renderChatList() {
   const empty = document.getElementById('combined-empty')
   const layout = document.getElementById('combined-layout')
   if (empty) empty.classList.toggle('hidden', has)
-  if (layout) layout.classList.toggle('hidden', !has)
+  if (layout) layout.classList.remove('hidden')
   const cnt = document.getElementById('fav-count')
   if (cnt) cnt.textContent = has ? String(favs.length) : ''
 
   for (const p of favs) list.appendChild(makeChatRow(p))
   applyFavFilter() // фильтр поиска живёт и после перерисовки списка
 
-  // webview НА КАЖДЫЙ чат из избранного: предзагружаем только ВЕРХНИЕ чаты
-  // списка (приоритет/свежие) — остальные создаются и грузятся по клику
-  // (selectChat): иначе 60+ процессов мессенджеров съедают всю оперативку.
-  // TG/MAX в фоне НЕ открываем: открытие чата может снять непрочитанное.
-  for (const p of favs.slice(0, maxLiveViews())) {
-    if (p.serviceId === 'tg' || p.serviceId === 'max') continue
-    ensurePinView(p)
-  }
+  // Старт — ТОЛЬКО список избранного: никаких автоматически открытых чатов.
+  // Вьюха конкретного чата создаётся исключительно по клику пользователя
+  // (selectChat), иначе при запуске открывались произвольные чаты.
   // вьюхи чатов, которых больше нет в избранном, — убираем
   const alive = new Set(favs.map(p => p.id))
   for (const [pid, v] of Object.entries(state.pinViews)) {
     if (!alive.has(pid)) { destroyPinView(pid, v) }
   }
-  trimPinViews(state.cfg.selectedPinId)
+  syncChatSelection()
+  trimPinViews(state.activePinId)
+  // Автовыбора чата при старте/перерисовке больше нет: Astra Linux или любой
+  // другой чат не открывается сам. Пользователь сам выбирает чат кликом.
+}
 
-  if (has) {
-    const sel = favs.find(x => x.id === state.cfg.selectedPinId) || favs[0]
-    selectChat(sel.id, { markRead: false })
-  } else {
-    for (const v of Object.values(state.pinViews)) v.classList.remove('active')
+// Refresh selection chrome without navigating, loading or marking a chat read.
+function syncChatSelection() {
+  const p = state.cfg.pinned.find(x => x.id === state.activePinId)
+  const active = !!(p && state.cfg.services.some(s => s.id === p.serviceId) && state.pinViews[p.id])
+  if (!active) state.activePinId = ''
+  for (const [pid, view] of Object.entries(state.pinViews)) view.classList.toggle('active', active && pid === state.activePinId)
+  document.querySelectorAll('.chat-row').forEach(row => row.classList.toggle('selected', active && row.dataset.pin === state.activePinId))
+  const placeholder = document.getElementById('chat-placeholder')
+  if (placeholder) placeholder.classList.toggle('hidden', active)
+  const head = document.getElementById('view-head')
+  if (head) {
+    head.classList.toggle('hidden', !active)
+    if (!active) head.innerHTML = ''
   }
 }
 
@@ -987,6 +1032,8 @@ function makeChatRow(p) {
   const svcName = svc ? svc.name : '?'
   const row = document.createElement('div')
   row.className = 'chat-row'
+  // Rebuilding a row must preserve the explicit session selection, not a saved preference.
+  row.classList.toggle('selected', p.id === state.activePinId)
   row.dataset.pin = p.id
   row.innerHTML = `
     ${svc && state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
@@ -1007,6 +1054,9 @@ function makeChatRow(p) {
       <button data-act="pin">📌 <span>Закрепить</span></button>
       <button data-act="del">✕ Удалить</button>
     </div>`
+  const cachedUnread = (state.unreadTotals || {})[p.id]
+  setRowBadge(row, { count: cachedUnread?.c || 0, mentions: cachedUnread?.m || 0,
+    unread: !!(state.unreadDots || {})[p.id] })
   const badge = row.querySelector('.svc-badge')
   badge.dataset.svc = svc ? svc.id : ''
   if (svc && state.svcIcons[svc.id]) badge.src = state.svcIcons[svc.id]
@@ -1073,22 +1123,20 @@ function makeChatRow(p) {
 function setRowPreview(el, text) {
   if (!el) return
   let t = String(text || '')
-  const rowEl = el.closest('.chat-row')
-  const pin = rowEl ? (state.cfg.pinned || []).find(p => p.id === rowEl.dataset.pin) : null
-  if (pin && pin.title) {
-    const pre = String(pin.title).trim() + ': '
-    const ac = (state.msgAuth || {})[pin.id]
-    // для лички MAX «Саша: текст» — это АВТОР, а не дубль названия
-    const keepAuthor = !!(ac && ac.dm)
-    if (!keepAuthor && t.indexOf(pre) === 0) t = t.slice(pre.length)
-    // личка: без метки автора непонятно, кто писал — подставляем имя чата
-    // (свои сообщения идут с «Вы:», их не трогаем)
-    const isDMp = /#@/.test(String(pin.url || ''))
-    const hasAuth = /^[^:]{2,40}:\s?/.test(t) || /^Вы:/.test(t) || /^(https?|ftp|mailto):/i.test(t) || keepAuthor
-    if (isDMp && t && !hasAuth) t = String(pin.title).trim() + ': ' + t
-  }
-  if (el.dataset.txt === t) return
+  // Render the supplied evidence; a chat title is not a sender identity.
+  const pinId = el.closest?.('.chat-row')?.dataset?.pin
+  const proof = typeof state !== 'undefined' && state.msgAuth?.[pinId]
+  const structured = proof?.source === 'webk-top-message-cache' && proof.preview === t
+  const authorKey = structured ? 'explicit:' + proof.author : 'legacy'
+  if (el.dataset.txt === t && el.dataset.authorKey === authorKey) return
   el.dataset.txt = t
+  el.dataset.authorKey = authorKey
+  if (structured) {
+    // Explicit sender boundaries, not punctuation/length heuristics in a body.
+    if (proof.author) el.innerHTML = '<b>' + escapeHtml(proof.author + ':') + '</b> ' + escapeHtml(proof.text)
+    else el.textContent = t
+    return
+  }
   // автор до первого двоеточия — жирным; пробел после двоеточия НЕ обязателен (ydx даёт «Имя:Текст»)
   let i = t.indexOf(': ')
   let rest = ''
@@ -1170,6 +1218,7 @@ function selectChat(pinId, opts) {
   const svc = state.cfg.services.find(s => s.id === p.serviceId)
   if (!svc) return
   state.cfg.selectedPinId = pinId
+  state.activePinId = pinId
   // открыл чат ЯВНО (клик) → его «новые» обнуляются. Автовыбор при старте/
   // перерисовке списка базу не трогает — иначе счётчик исчезает при рестарте.
   if (opts.markRead !== false && state.unreadTotals && state.unreadTotals[pinId]) {
@@ -1195,6 +1244,8 @@ function selectChat(pinId, opts) {
   for (const [pid, v] of Object.entries(state.pinViews)) v.classList.toggle('active', pid === pinId)
   try { if (wv) wv.executeJavaScript('window.dispatchEvent(new Event("resize"))') } catch (e) {}
   renderViewHead(p, svc)
+  syncChatSelection()
+  if (opts.markRead !== false) queueSelectedUnread(pinId).catch(() => {})
 }
 
 function currentPinFor(svcId) {
@@ -1227,8 +1278,17 @@ function pumpPreload() {
   if (!wv.isConnected) { pumpPreload(); return }
   preloadBusy = true
   let settled = false
-  const done = () => { if (settled) return; settled = true; clearTimeout(tid); preloadBusy = false; pumpPreload() }
+  const done = () => {
+    if (settled) return
+    settled = true
+    clearTimeout(tid)
+    wv.removeEventListener('dom-ready', done)
+    delete wv.__hubPreloadDone
+    preloadBusy = false
+    pumpPreload()
+  }
   const tid = setTimeout(done, 8000)
+  wv.__hubPreloadDone = done
   wv.addEventListener('dom-ready', done, { once: true })
   wv.dataset.loadedSrc = url
   try { wv.setAttribute('src', url) } catch (e) { done() }
@@ -1269,12 +1329,17 @@ function ensurePinView(p) {
   })
   wv.addEventListener('did-navigate-in-page', () => setTimeout(() => applyColumnTweaks(wv, p), 400))
   // страховка: если CSS потерялся (медленный старт SPA, самообновление страницы) — вернуть
+  // Keep the physical slot until settlement: a timeout cannot cancel guest JS.
+  let cssProbePending = false
   wv.__hubTimer = setInterval(async () => {
+    if (cssProbePending || state.pinViews[p.id] !== wv || wv.isConnected === false) return
+    cssProbePending = true
     try {
       const ok = await wv.executeJavaScript('!!window.__chatHubCssTimer')
-      if (ok) return
+      if (ok || state.pinViews[p.id] !== wv || wv.isConnected === false) return
       if (String((state.cfg.columnCss || {})[svc.id] || '').trim()) applyColumnTweaks(wv, p, 4)
     } catch (e) {}
+    finally { cssProbePending = false }
   }, 5000)
   return wv
 }
@@ -1291,19 +1356,27 @@ function destroyPinView(pid, v) {
   try { v.remove() } catch (e) {}
   delete state.pinViews[pid]
   delete state.lastUsed[pid]
+  // Release the serial loader now; its settled guard rejects late callbacks.
+  if (v.__hubPreloadDone) v.__hubPreloadDone()
 }
 
-// LRU: живых вьюх — не больше maxLiveViews (8 по умолчанию). Вытесняем самые
-// давно не открывавшиеся; текущий чат и чаты с ручным приоритетом (↑) не трогаем.
-function trimPinViews(keepId) {
+// LRU: priority affects list order only, never memory residency. Service collectors
+// are stored separately in svcViews and are not candidates for pin eviction.
+function trimPinViews(keepId = state.activePinId) {
   const entries = Object.entries(state.pinViews)
   const max = maxLiveViews()
-  const prio = new Set(state.cfg.pinned.filter(p => p.priority).map(p => p.id))
-  const evictable = entries.filter(([pid]) => pid !== keepId && !prio.has(pid))
+  const evictable = entries.filter(([pid]) => pid !== (state.activePinId || keepId))
   const excess = entries.length - max
   if (excess <= 0 || !evictable.length) return
   evictable.sort((a, b) => (state.lastUsed[a[0]] || 0) - (state.lastUsed[b[0]] || 0))
-  for (const [pid, v] of evictable.slice(0, excess)) destroyPinView(pid, v)
+  const victims = evictable.slice(0, excess)
+  // Cancel the whole batch before destroying the current loader: its completion
+  // pumps the queue synchronously, which must not navigate another victim.
+  const views = new Set(victims.map(([, v]) => v))
+  for (let i = preloadQueue.length - 1; i >= 0; i--) {
+    if (views.has(preloadQueue[i].wv)) preloadQueue.splice(i, 1)
+  }
+  for (const [pid, v] of victims) destroyPinView(pid, v)
 }
 
 // любое живое окно сервиса (для чтения непрочитанных): вьюха первого чата сервиса
@@ -1362,10 +1435,10 @@ async function removePin(pinId) {
   const removed = state.cfg.pinned.find(x => x.id === pinId)
   state.cfg.pinned = state.cfg.pinned.filter(x => x.id !== pinId)
   if (state.cfg.selectedPinId === pinId) {
-    state.cfg.selectedPinId = (state.cfg.pinned[0] || {}).id || ''
+    state.cfg.selectedPinId = ''
   }
   // гигиена: не оставляем записи удалённых чатов в картах состояния
-  for (const k of ['liveAct', 'rankAct', 'prevUnread', 'lastUsed', 'lastMsgAt', 'lastMsgText', 'tgPeerOf', 'tgSearchedAt']) {
+  for (const k of ['liveAct', 'rankAct', 'prevUnread', 'lastUsed', 'lastMsgAt', 'lastMsgDayOnly', 'lastMsgSource', 'lastMsgText', 'tgPeerOf', 'tgIdentityKeys', 'tgSearchedAt', 'pinAvatars', 'lastMsgPreview', 'msgAuth', 'unreadBaseC', 'unreadBaseM', 'unreadTotals', 'unreadTotalsAt', 'unreadDots', 'mmPinCounts', '__prevLastMsgAt']) {
     try { delete state[k][pinId] } catch (e) {}
   }
   // ...и в сохранённой активности конфига (п.13)
@@ -1407,8 +1480,14 @@ function openInServiceTab(p) {
 function pinMatches(p, svc, url, title) {
   if (!p || p.serviceId !== svc.id) return false
   if (svc.id === 'mm') {
-    const slugOf = u => { const m = String(u).match(/\/(channels|messages)\/([^/?#]+)/); return m ? m[2] : null }
-    return !!slugOf(p.url) && slugOf(p.url) === slugOf(url)
+    try {
+      const a = new URL(p.url), b = new URL(url)
+      if (a.origin !== b.origin) return false
+      const x = a.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+      const y = b.pathname.split('/').filter(Boolean).map(decodeURIComponent)
+      if (x.length !== 3 || y.length !== 3 || !['channels', 'messages'].includes(x[1])) return false
+      return x[1] === y[1] && x[2] === y[2] && (x[1] === 'messages' || x[0] === y[0])
+    } catch { return false }
   }
   if (svc.id === 'tg') {
     const hOf = u => { const m = String(u).match(/#([-\w@]+)/); return m ? m[1] : null }
@@ -1902,10 +1981,60 @@ async function tgSearchResolve(favs) {
 // заголовка пина — иначе в кэш попадают чужие pid (один бот «обслуживал»
 // 25 пинов: у всех его время и бейдж непрочитанных). Заголовок пина бывает
 // обрезан («Абду» ← «Абдурахимов») — ищем вхождение фрагмента.
+function applyTgIdentityObservation(pin, result) {
+  if (/^https:\/\/web\.telegram\.org\/k\/#-?[1-9]\d*$/.test(pin.url || '')) {
+    const numeric = result.dialogIdentity
+    if (numeric?.kind === 'user' && numeric.source === 'webk-account-peer' &&
+        pin.url === 'https://web.telegram.org/k/#' + numeric.peerId) {
+      const bindings = state.tgIdentityKeys || (state.tgIdentityKeys = {})
+      const key = `${numeric.accountId}::${numeric.peerId}`
+      if (bindings[pin.id] && bindings[pin.id] !== key) {
+        for (const field of ['pinAvatars', 'tgPeerOf', 'unreadTotals', 'unreadTotalsAt', 'unreadDots',
+          'unreadBaseC', 'unreadBaseM', 'prevUnread', 'lastMsgAt', 'lastMsgDayOnly', 'lastMsgSource',
+          'lastMsgText', 'lastMsgPreview', 'msgAuth', 'liveAct', 'rankAct', '__prevLastMsgAt']) {
+          if (state[field]) delete state[field][pin.id]
+        }
+        const row = document.querySelector('.chat-row[data-pin="' + pin.id + '"]')
+        if (row) setRowAvatar(row, null)
+      }
+      bindings[pin.id] = key
+    }
+    const proof = result.messageIdentity, saved = state.lastMsgSource?.[pin.id]
+    if (proof && pin.url === 'https://web.telegram.org/k/#' + proof.peerId && saved &&
+        (saved.accountId !== proof.accountId || saved.peerId !== proof.peerId || saved.canonicalUrl !== pin.url)) {
+      for (const field of ['lastMsgAt', 'lastMsgDayOnly', 'lastMsgSource', 'lastMsgText', 'liveAct', '__prevLastMsgAt']) {
+        if (state[field]) delete state[field][pin.id]
+      }
+    }
+    return
+  }
+  if (!result.identityScoped || !/^https:\/\/web\.telegram\.org\/k\/#@[A-Za-z0-9_]+$/.test(pin.url || '')) return
+  const proof = result.identity
+  const key = proof ? `${proof.accountId}:${proof.username}:${proof.peerId}` : ''
+  const bindings = state.tgIdentityKeys || (state.tgIdentityKeys = {})
+  if (bindings[pin.id] === key) return
+  // A cold-start session binding is absent, but persisted source evidence can
+  // preserve this exact timestamp once the same account/peer is reverified.
+  const saved = state.lastMsgSource?.[pin.id]
+  const preserveTime = proof && saved?.source === 'webk-top-message-cache' &&
+    saved.canonicalUrl === pin.url && saved.accountId === proof.accountId &&
+    saved.peerId === proof.peerId && saved.at === state.lastMsgAt?.[pin.id]
+  bindings[pin.id] = key
+  // No account-less images, counters, activity or authors survive rebinding.
+  for (const field of ['pinAvatars', 'tgPeerOf', 'unreadTotals', 'unreadTotalsAt', 'unreadDots',
+    'unreadBaseC', 'unreadBaseM', 'prevUnread', 'lastMsgAt', 'lastMsgDayOnly', 'lastMsgSource', 'lastMsgText', 'lastMsgPreview',
+    'msgAuth', 'liveAct', 'rankAct', '__prevLastMsgAt']) {
+    if (preserveTime && ['lastMsgAt', 'lastMsgDayOnly', 'lastMsgSource', 'lastMsgText'].includes(field)) continue
+    if (state[field]) delete state[field][pin.id]
+  }
+  const row = document.querySelector('.chat-row[data-pin="' + pin.id + '"]')
+  if (row) setRowAvatar(row, null)
+}
+
 function tgPidSafe(pin, pid, rowTitle) {
   if (!pin || !pid) return false
   const upid = (String(pin.url || '').match(/#(-?\d+)/) || [])[1]
-  if (upid && String(upid) === String(pid)) return true
+  if (upid) return String(upid) === String(pid)
   // п.19: пин с @username в ссылке получает pid ТОЛЬКО от собственного
   // username-поиска — общий title-матчинг не различает дубликаты названий
   if (/@([A-Za-z0-9_]{3,})/.test(String(pin.url || ''))) return false
@@ -1917,10 +2046,165 @@ function tgPidSafe(pin, pid, rowTitle) {
   return !!n && words.some(w => n.indexOf(w) >= 0)
 }
 
+// One logical job per service/task. A deadline releases the scheduler, not the
+// underlying Electron promise: unreadGuestCall keeps that physical call single-flight.
+function runUnreadJob(key, svcId, work, budget = 4500) {
+  const jobs = state.unreadJobs || (state.unreadJobs = new Map())
+  const previous = jobs.get(key)
+  if (previous && previous.current()) return previous.promise
+  const svc = state.cfg.services.find(s => s.id === svcId)
+  const view = state.svcViews[svcId]
+  const viewState = view && unreadViewState(view)
+  const epoch = viewState && viewState.epoch
+  const signature = () => JSON.stringify([state.cfg.services.find(s => s.id === svcId),
+    state.cfg.pinned.filter(p => p.serviceId === svcId).map(p => [p.id, p.url, p.title]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    key.startsWith('read:') || key === 'mm:read' ? state.activePinId : ''])
+  const initial = signature()
+  const revisions = state.unreadRevisions || (state.unreadRevisions = {})
+  let revision = revisions[svcId] || 0
+  let active = true, timer
+  const job = {
+    current: () => active && jobs.get(key) === job && revision === (revisions[svcId] || 0) && !!svc && state.svcViews[svcId] === view &&
+      (!view || (view.isConnected !== false && viewState.epoch === epoch)) && signature() === initial,
+    check() { if (!job.current()) throw new Error('Stale unread job') },
+    supersede() { job.check(); revision = revisions[svcId] = (revisions[svcId] || 0) + 1 },
+    async wait(operation) {
+      job.check()
+      const value = await Promise.race([Promise.resolve().then(operation), expired])
+      job.check()
+      return value
+    }
+  }
+  const expired = new Promise((resolve, reject) => {
+    timer = setTimeout(() => { active = false; reject(new Error('Unread deadline')) }, budget)
+  })
+  jobs.set(key, job)
+  job.promise = Promise.race([Promise.resolve().then(() => work(job)), expired])
+    .catch(() => {})
+    .finally(() => {
+      active = false
+      clearTimeout(timer)
+      if (jobs.get(key) === job) jobs.delete(key)
+    })
+  return job.promise
+}
+
+function unreadViewState(view) {
+  const views = state.unreadViews || (state.unreadViews = new WeakMap())
+  let entry = views.get(view)
+  if (!entry) {
+    entry = { epoch: 0, pending: new Map() }
+    views.set(view, entry)
+    if (view.addEventListener) {
+      for (const event of ['did-start-loading', 'render-process-gone', 'destroyed']) {
+        view.addEventListener(event, () => { entry.epoch++; entry.pending.clear() })
+      }
+    }
+  }
+  return entry
+}
+
+function unreadGuestCall(view, key, operation) {
+  const entry = unreadViewState(view)
+  if (entry.pending.has(key)) return Promise.reject(new Error('Unread guest still busy'))
+  const token = {}
+  const epoch = entry.epoch
+  entry.pending.set(key, token)
+  return Promise.resolve().then(operation).then(value => {
+    if (entry.epoch !== epoch || view.isConnected === false) throw new Error('Stale unread guest')
+    return value
+  }).finally(() => {
+    if (entry.pending.get(key) === token) entry.pending.delete(key)
+  })
+}
+
 async function pollUnread() {
-  let favSumT = 0  // Сборная (ТОЛЬКО избранное): всего непрочитанных
-  let favSumM = 0  // Сборная: @упоминания в избранных чатах
-  for (const svc of state.cfg.services) {
+  await Promise.all(state.cfg.services.map(async svc => {
+    const selected = state.cfg.pinned.find(p => p.id === state.activePinId && p.serviceId === svc.id)
+    if (selected) await refreshSelectedUnread(selected.id)
+    return runUnreadJob('poll:' + svc.id, svc.id, async job => {
+      try { await pollUnreadService(svc, job) }
+      finally { refreshUnreadPresentation() }
+    })
+  }))
+}
+
+// Fast, read-only lane for the selected chat: no scrolling, avatars or previews.
+// A single bounded probe may bypass a slow background sweep; it never assumes
+// that opening a chat means its newest messages have actually been read.
+async function refreshSelectedUnread(pinId) {
+  const pin = state.cfg.pinned.find(p => p.id === pinId)
+  if (!pin || state.activePinId !== pinId) return
+  // MAX has no verified immutable row ID yet. The single-pin lane must not
+  // bypass the full collector's duplicate-favorite-title ambiguity guard.
+  if (pin.serviceId === 'max' && String(pin.title || '').trim() && state.cfg.pinned.some(other => other.id !== pin.id &&
+      other.serviceId === 'max' && String(other.title).trim() === String(pin.title).trim())) return
+  return runUnreadJob('read:' + pin.serviceId, pin.serviceId, async job => {
+    let observed = null
+    if (pin.serviceId === 'mm') {
+      const before = state.mmPinCounts && state.mmPinCounts[pinId]
+      await job.wait(() => mmLastPosts(pinId))
+      const after = state.mmPinCounts && state.mmPinCounts[pinId]
+      if (after && after !== before) observed = { count: after.count, mentions: after.mentions, found: true }
+    } else {
+      const ext = UNREAD_EXTRACTORS[pin.serviceId]
+      if (!ext) return
+      const candidates = [...new Set((pin.serviceId === 'tg' && /^https:\/\/web\.telegram\.org\/k\/#(?:@[A-Za-z0-9_]+|[1-9]\d*)$/.test(pin.url || '')
+        ? [state.svcViews.tg]
+        : [state.pinViews[pinId], state.svcViews[pin.serviceId]]).filter(Boolean))]
+      for (const view of candidates) {
+        try {
+          const source = `(async () => {
+            const __grabAvatar = async () => null;
+            const __chatHubScanRows = ${__chatHubScanRows.toString()};
+            const __chatHubBoundedAvatar = ${__chatHubBoundedAvatar.toString()};
+            const formatMaxPreview = ${formatMaxPreview.toString()};
+            return (${ext.toString()})(${JSON.stringify([{ id: pin.id, url: pin.url, title: pin.title,
+              pid: (state.tgPeerOf || {})[pin.id] || null, identityKey: state.tgIdentityKeys?.[pin.id] || '',
+              needDialogMetadata: pin.serviceId === 'tg' && view === state.svcViews.tg,
+              needAvatar: false, needUnread: false }])}, false);
+          })()`
+          const raw = await job.wait(() => unreadGuestCall(view, 'read', () => view.executeJavaScript(source)))
+          const res = JSON.parse(raw)
+          const result = (res.favs || []).find(r => r.id === pinId)
+          if (pin.serviceId === 'tg' && (result?.identityScoped || result?.dialogIdentity)) applyTgIdentityObservation(pin, result)
+          observed = result?.found === true ? result : null
+          if (observed || result?.dialogScoped) break
+        } catch {}
+        job.check()
+      }
+    }
+    job.check()
+    if (state.activePinId !== pinId || !observed || !Number.isFinite(observed.count) || !Number.isFinite(observed.mentions)) return
+    job.supersede() // older sweeps/API snapshots must not resurrect an acknowledged badge
+    state.unreadTotals[pinId] = { c: observed.count, m: observed.mentions }
+    state.unreadTotalsAt[pinId] = Date.now()
+    state.selectedUnreadObservation = { pinId, at: Date.now() }
+    state.unreadDots = state.unreadDots || {}
+    state.unreadDots[pinId] = !!observed.unread && !observed.count && !observed.mentions
+    const row = document.querySelector('.chat-row[data-pin="' + pinId + '"]')
+    if (row) setRowBadge(row, { count: observed.count, mentions: observed.mentions,
+      unread: observed.count > 0 || observed.mentions > 0 || !!observed.unread })
+    refreshUnreadPresentation()
+  })
+}
+
+function queueSelectedUnread(pinId) {
+  clearTimeout(state.selectedUnreadTimer)
+  const token = {}
+  state.selectedUnreadRequest = token
+  let attempts = 0
+  const run = async () => {
+    if (state.selectedUnreadRequest !== token || state.activePinId !== pinId) return
+    await refreshSelectedUnread(pinId)
+    if (++attempts < 3 && state.selectedUnreadRequest === token && state.activePinId === pinId) {
+      state.selectedUnreadTimer = setTimeout(run, 1000)
+    }
+  }
+  return run()
+}
+
+async function pollUnreadService(svc, job) {
     const favs = favoritesOf(svc.id)
     const ext = UNREAD_EXTRACTORS[svc.id]
     const wv = svcViewFor(svc.id)
@@ -1930,7 +2214,7 @@ async function pollUnread() {
     // п.20: экстрактор нужен и БЕЗ избранного —svcTotals (два счётчика
     // вкладки) считаются по всему списку мессенджера; избранные строки
     // при пустом favs просто не обновятся
-    if (!ext || !wv) continue
+    if (!ext || !wv) return
     let res = null
     // кандидатные вьюхи: вкладка мессенджера ПЕРВОЙ — у неё полный живой
     // список и бейджи обновляются в реальном времени. Пин-вьюха (открытый
@@ -1949,21 +2233,36 @@ async function pollUnread() {
     }
     for (const cand of candidates) {
       if (!cand) continue
+      // Authoritative username/numeric-user observations never downgrade to a pin-view's
+      // virtualized/stale rows when the service execution itself is unavailable.
+      if (svc.id === 'tg' && cand !== state.svcViews.tg &&
+          favs.some(f => /^https:\/\/web\.telegram\.org\/k\/#(?:@[A-Za-z0-9_]+|[1-9]\d*)$/.test(f.url || ''))) continue
       try {
         // второй аргумент экстрактора: можно ли скроллить список (вкладка
         // сервиса сейчас не на экране — прокрутка сайдбара не видна; TG иначе
         // не добирается до виртуализированных строк ниже первого экрана)
         const pane = document.querySelector('section[data-tab="svc:' + svc.id + '"]')
-        const allowScroll = !(pane && pane.classList.contains('visible'))
+        let allowScroll = false
+        if (['tg', 'max', 'ydx'].includes(svc.id) && cand === state.svcViews[svc.id] && !(pane && pane.classList.contains('visible'))) {
+          try { allowScroll = (await job.wait(() => window.hub.isWinFocused())) === false } catch {}
+          job.check()
+        }
         // аватарки: шлём флаг needAvatar для пинов без закэшированной
         // аватарки; экстрактор при живой строке превращает <img>/background
         // строки в data-URL (ВНУТРИ webview). __grabAvatar объявляется
         // обёрткой в области видимости сериализованного экстрактора.
         state.pinAvatars = state.pinAvatars || {}
-        const out = await cand.executeJavaScript(
-          '(async () => { const __grabAvatar = ' + __chatHubGrabAvatar.toString() + '; const formatMaxPreview = ' + formatMaxPreview.toString() + '; return (' + ext.toString() + ')(' + JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, needAvatar: !state.pinAvatars[f.id], needUnread: (svc.id === 'tg' || svc.id === 'max' || svc.id === 'ydx') && (!state.unreadTotals[f.id] || Date.now() - ((state.unreadTotalsAt || {})[f.id] || 0) > 30000) }))) + ',' + JSON.stringify(allowScroll) + ') })()'
-        )
+        const out = await job.wait(() => unreadGuestCall(cand, 'extract', () => cand.executeJavaScript(
+          `(async () => {
+            const __grabAvatar = ${__chatHubGrabAvatar.toString()};
+            const __chatHubScanRows = ${__chatHubScanRows.toString()};
+            const __chatHubBoundedAvatar = ${__chatHubBoundedAvatar.toString()};
+            const formatMaxPreview = ${formatMaxPreview.toString()};
+            return (${ext.toString()})(${JSON.stringify(favs.map(f => ({ id: f.id, url: f.url, title: f.title, pid: (svc.id === 'tg' && state.tgPeerOf[f.id]) || null, identityKey: (svc.id === 'tg' && state.tgIdentityKeys?.[f.id]) || '', needDialogMetadata: svc.id === 'tg' && cand === state.svcViews.tg, needMessageMetadata: svc.id === 'tg' && cand === state.svcViews.tg, needMessagePreview: svc.id === 'tg' && cand === state.svcViews.tg, needMetadataAvatar: svc.id === 'tg' && cand === state.svcViews.tg, needAvatar: !state.pinAvatars[f.id], needUnread: (svc.id === 'tg' || svc.id === 'max' || svc.id === 'ydx') && (!state.unreadTotals[f.id] || Date.now() - ((state.unreadTotalsAt || {})[f.id] || 0) > 30000) })))},${JSON.stringify(allowScroll)});
+          })()`
+        )))
         const r = JSON.parse(out)
+        if (!r || !Array.isArray(r.favs)) throw new Error('Invalid unread response')
         // TG: запоминаем сопоставление пин → числовой peer-id (после первого
         // нахождения по названию дальше матчуем по pid быстро и однозначно)
         if (svc.id === 'tg' && r && r.favs) {
@@ -1978,14 +2277,16 @@ async function pollUnread() {
         }
         if (!res) res = r
         const useful = r && r.favs && r.favs.some(f => f.time || f.found || (typeof f.rank === 'number' && f.rank < 9999))
+        if (svc.id === 'tg' && cand === state.svcViews.tg && r.favs.some(f => f.dialogScoped)) { res = r; break }
         if (useful) { res = r; break }
       } catch {}
+      job.check()
     }
     // TG: пины вне видимых строк (другие папки, виртуализация) добываем через
     // ПОИСК webk доверенным вводом — результат сливаем с обычным сбором.
     if (svc.id === 'tg') {
       try {
-        const extra = await tgSearchResolve(favs)
+        const extra = await job.wait(() => tgSearchResolve(favs))
         if (extra && extra.favs && extra.favs.length) {
           const byId = new Map(((res && res.favs) || []).map(f => [f.id, f]))
           for (const f of extra.favs) {
@@ -2001,21 +2302,19 @@ async function pollUnread() {
             }
           }
           res = { favs: Array.from(byId.values()), svcTotals: (res && res.svcTotals) || null }
-          // автор в превью: если webk не дал «Имя:», подставляем название чата
-          for (const f of res.favs) {
-            if (f.preview && String(f.preview).indexOf(":") < 0) {
-              const pinT = state.cfg.pinned.find(p => p.id === f.id)
-              if (pinT && pinT.title) f.preview = pinT.title + ": " + f.preview
-            }
-          }
+          // Preserve unknown senders; search results do not prove authorship.
         }
       } catch {}
     }
-    if (!res) continue
+    job.check()
+    if (!res) return
     let mentions = res.dmMentions || 0     // mm: упоминания во ВСЕХ личных сообщениях
     let unreadChats = res.dmUnread ? 1 : 0
     let countSum = 0
     for (const r of (res.favs || [])) {
+      const pin = state.cfg.pinned.find(p => p.id === r.id && p.serviceId === svc.id)
+      if (!pin) continue
+      if (svc.id === 'tg' && (r.identityScoped || r.messageIdentity || r.dialogIdentity)) applyTgIdentityObservation(pin, r)
       // «ТОЛЬКО НОВЫЕ»: показываем ПРИРОСТ непрочитанных, не backlog.
       // ВАЖНО: у каждого сервиса ОДИН источник чисел — иначе смена источника
       // (сайдбар -> API) выглядит как «+700 новых». MM: только API msg_count
@@ -2023,9 +2322,12 @@ async function pollUnread() {
       let rawC = r.count || 0
       let rawM = r.mentions || 0
       let fresh = r.found !== false
+      const selectedObservation = state.selectedUnreadObservation
+      if (svc.id !== 'mm' && r.id === state.activePinId && selectedObservation &&
+          selectedObservation.pinId === r.id && Date.now() - selectedObservation.at < 5000) fresh = false
       if (svc.id === 'mm') {
         const mp = state.mmPinCounts && state.mmPinCounts[r.id]
-        fresh = !!mp
+        fresh = !!mp && Number.isFinite(mp.observedAt) && mp.observedAt > ((state.unreadTotalsAt || {})[r.id] || 0)
         if (mp) { rawC = mp.count || 0; rawM = mp.mentions || 0 }
         r.count = rawC
         r.mentions = rawM
@@ -2045,7 +2347,7 @@ async function pollUnread() {
       if (fresh || state.unreadTotals[r.id]) {
         if (fresh) {
           state.unreadTotals[r.id] = { c: rawC, m: rawM }
-          state.unreadTotalsAt[r.id] = Date.now()
+          state.unreadTotalsAt[r.id] = svc.id === 'mm' ? state.mmPinCounts[r.id].observedAt : Date.now()
         }
         // база ставится ОДИН раз (первый замер); вниз сдвигается только при
         // открытии чата (selectChat). После рестарта она восстанавливается
@@ -2064,9 +2366,9 @@ async function pollUnread() {
         dC = delta.dC
         dM = delta.dM
         dU = delta.dU
-        // В строке — ФАКТИЧЕСКИЕ непрочитанные, а не только прирост от базы:
-        // уже существующие непрочитанные обязаны быть видны красным счётчиком
-        if (row) setRowBadge(row, { count: rawC, mentions: rawM, unread: rawC > 0 || rawM > 0 || r.unread })
+        // счётчик = ВСЕ непрочитанные, даже если чат пользователь не открывал
+        if (row) setRowBadge(row, { count: rawC, mentions: rawM,
+          unread: rawC > 0 || rawM > 0 || (fresh ? r.unread : !!(state.unreadDots || {})[r.id]) })
       } else if (row) setRowBadge(row, { count: 0, mentions: 0, unread: false })
       // аватарка чата, пойманная экстрактором → кэш и в строку (до
       // следующего рестарта; монограмма-заглушка остаётся, если не поймали)
@@ -2075,43 +2377,49 @@ async function pollUnread() {
         if (row) setRowAvatar(row, r.avatar)
       }
       // TG: строка не найдена в виртуализированном списке — аватар из шапки пин-вьюхи
-      if (!state.pinAvatars[r.id] && svc.id === 'tg') {
+      if (!state.pinAvatars[r.id] && svc.id === 'tg' && !r.identityScoped) {
         try {
           const pv = state.pinViews[r.id]
           if (pv) {
-            const av = await grabAvatarFromPinView(pv, r.url)
+            const av = await job.wait(() => unreadGuestCall(pv, 'avatar', () => grabAvatarFromPinView(pv, pin.url)))
             if (av) { state.pinAvatars[r.id] = av; if (row) setRowAvatar(row, av) }
           }
         } catch (e) {}
       }
+      job.check()
       if (r.mentions) mentions += r.mentions
       if (r.count) countSum += r.count
       if (r.unread) unreadChats++
-      // Сборная — только избранное: всего непрочитанных + упоминания;
+      // Сборная — только избранное: все непрочитанные + упоминания;
       // «точка без числа» (unread без count/mentions) считаем как 1
-      favSumT += rawC + (r.unread && rawC === 0 && rawM === 0 ? 1 : 0)
-      favSumM += rawM
+      state.unreadDots = state.unreadDots || {}
+      if (fresh) state.unreadDots[r.id] = !!r.unread && rawC === 0 && rawM === 0
       // активность для сортировки: позиция строки в списке мессенджера
       // (списки TG и MAX сами отсортированы по свежести последних сообщений)
-      state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
-      // превью последнего сообщения: TG/MAX/Телемост — из экстракторов, MM — из API постов
-      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2)
-      const ac = (state.msgAuth || {})[r.id]
-      if (ac && ac.text && pv.indexOf(ac.text) >= 0) {
-        const isDMc = pinA && (/#@/.test(String(pinA.url || '')) || ac.dm)
-        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : (isDMc && pinA.title ? pinA.title + ': ' : ''))) + ac.text
+      if (r.found !== false) state.rankAct[r.id] = (typeof r.rank === 'number') ? r.rank : 9999
+      // Exact cache evidence bypasses legacy text-only author learning.
+      const mp = r.messagePreview
+      const verifiedPreview = svc.id === 'tg' && mp?.source === 'webk-top-message-cache' &&
+        mp.accountId === r.messageIdentity?.accountId && mp.peerId === r.messageIdentity?.peerId &&
+        mp.messageId === r.messageTime?.messageId && typeof mp.preview === 'string' && mp.preview.length <= 370
+      if (verifiedPreview) {
+        state.lastMsgPreview[r.id] = mp.preview
+        state.msgAuth = state.msgAuth || {}
+        state.msgAuth[r.id] = { ...mp, name: mp.author }
+      } else if (r.previewScoped) {
+        // Missing/deleted/unavailable top cache is unknown, never an old body or draft.
+        delete state.lastMsgPreview[r.id]
+        if (state.msgAuth) delete state.msgAuth[r.id]
       }
-      state.lastMsgPreview[r.id] = pv
-      if (svc.id === 'tg' && state.pinViews && state.pinViews[r.id]) {
+      if (r.preview && !verifiedPreview && !r.previewScoped) {
+      state.lastMsgPreview[r.id] = restorePreviewAuthor(r.preview, (state.msgAuth || {})[r.id], r.messageId)
+      if (svc.id === 'tg' && !r.identityScoped && state.pinViews && state.pinViews[r.id]) {
         try {
-          const lb = await grabViewLastMsg(state.pinViews[r.id], r.url)
+          const pv = state.pinViews[r.id]
+          const lb = await job.wait(() => unreadGuestCall(pv, 'preview', () => grabViewLastMsg(pv, pin.url)))
           if (lb && lb.text) {
-            let pre = lb.text
-            const pinG = state.cfg.pinned.find(p => p.id === r.id)
-            // текст, начинающийся с названия чата, — дубль (название уже строкой выше)
-            if (pinG && pinG.title && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
             state.msgAuth = state.msgAuth || {}
-            state.msgAuth[r.id] = { text: pre, out: lb.out, name: lb.name }
+            state.msgAuth[r.id] = { ...lb }
             // сохраняем выученное авторство — переживает перезапуск
             state.cfg.activity = state.cfg.activity || {}
             state.cfg.activity.msgAuth = state.msgAuth
@@ -2119,43 +2427,46 @@ async function pollUnread() {
               state.msgAuthSaveAt = Date.now()
               try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
             }
-            const isDMp = pinG && /#@/.test(String(pinG.url || ''))
-            let auth = ''
-            if (lb.out) auth = 'Вы: '
-            else if (!isDMp && lb.name) auth = lb.name + ': '
-            state.lastMsgPreview[r.id] = auth + pre
+            state.lastMsgPreview[r.id] = restorePreviewAuthor(r.preview, lb, r.messageId)
           }
         } catch (e) {}
       } }
+      job.check()
       if (svc.id === 'max' && state.pinViews && state.pinViews[r.id]) {
         try {
-          const lb = await grabViewLastMsgMax(state.pinViews[r.id], r.url)
+          const pv = state.pinViews[r.id]
+          const lb = await job.wait(() => unreadGuestCall(pv, 'preview', () => grabViewLastMsgMax(pv, pin.url)))
           if (lb && lb.text) {
-            let pre = lb.text
-            const pinG = state.cfg.pinned.find(p => p.id === r.id)
-            if (pinG && pinG.title && pre.indexOf(String(pinG.title) + ': ') === 0) pre = pre.slice(String(pinG.title).length + 2)
             state.msgAuth = state.msgAuth || {}
-            state.msgAuth[r.id] = { text: pre, out: lb.out, name: lb.name, dm: lb.dm }
+            state.msgAuth[r.id] = { ...lb }
             state.cfg.activity = state.cfg.activity || {}
             state.cfg.activity.msgAuth = state.msgAuth
             if (!state.msgAuthSaveAt || Date.now() - state.msgAuthSaveAt > 10000) {
               state.msgAuthSaveAt = Date.now()
               try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
             }
-            state.lastMsgPreview[r.id] = (lb.out ? 'Вы: ' : (lb.dm && pinG && pinG.title ? pinG.title + ': ' : (lb.name ? lb.name + ': ' : ''))) + pre
+            state.lastMsgPreview[r.id] = restorePreviewAuthor(state.lastMsgPreview[r.id], lb, r.messageId)
           }
         } catch (e) {}
       }
+      job.check()
       // время последнего сообщения — показываем в строке рядом с мессенджером
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       state.__prevLastMsgAt = state.__prevLastMsgAt || {}
       state.__prevLastMsgAt[r.id] = state.lastMsgAt[r.id] || 0
-      if (r.time) {
-        const pt = parseChatTime(r.time)
-        if (pt.at) {
-          state.lastMsgAt[r.id] = pt.at
-          state.lastMsgText[r.id] = fmtChatWhen(pt.at, pt.dayOnly)
-        }
+      if (r.found !== false && r.time) mergeLastMessageTime(r.id, parseChatTime(r.time))
+      // A top-message timestamp is independent of DOM visibility and unread.
+      const mt = r.messageTime
+      if (svc.id === 'ydx' && r.found === true && mt?.source === 'telemost-row-date' &&
+          mt.dayOnly === false && mt.canonicalUrl === pin.url && Number.isSafeInteger(mt.at) &&
+          mt.at >= 946684800000 && mt.at <= Date.now()) {
+        mergeLastMessageTime(r.id, { at: mt.at, dayOnly: false })
+      }
+      if (svc.id === 'tg' && mt?.source === 'webk-top-message-cache' && mt.dayOnly === false &&
+          /^[1-9]\d*$/.test(mt.accountId) && /^-?[1-9]\d*$/.test(mt.peerId) && /^[1-9]\d*$/.test(mt.messageId) &&
+          (r.identity ? r.identity.accountId === mt.accountId && r.identity.peerId === mt.peerId :
+            pin.url === 'https://web.telegram.org/k/#' + mt.peerId)) {
+        mergeLastMessageTime(r.id, { ...mt, serviceId: svc.id, canonicalUrl: pin.url })
       }
       // активность для сортировки: бамп только если выросло ИМЕННО время
       // последнего сообщения. Рост непрочитанных на старом чате (прочитали
@@ -2183,10 +2494,20 @@ async function pollUnread() {
       // нормализуем ключи к {t, m} — как у mmTabCounts (агрегат «Сборной» читает t/m)
       state.svcTabTotals[svc.id] = { t: res.svcTotals.total || 0, m: res.svcTotals.mentions || 0 }
       updateBadge2(svc.id, res.svcTotals.total || 0, res.svcTotals.mentions || 0)
+    } else if (res.coverage && res.coverage.complete === false) {
+      // A partial virtual window cannot replace a cached whole-service count.
     } else if (mentions > 0) updateBadge(svc.id, '@' + mentions, true)
     else if (countSum > 0) updateBadge(svc.id, String(countSum), false)
     else if (unreadChats > 0) updateBadge(svc.id, String(unreadChats), false)
     else updateBadge(svc.id, '', false)
+}
+
+function refreshUnreadPresentation() {
+  let favSumT = 0, favSumM = 0
+  for (const p of state.cfg.pinned) {
+    const total = (state.unreadTotals || {})[p.id]
+    if (total) { favSumT += total.c || 0; favSumM += total.m || 0 }
+    if ((state.unreadDots || {})[p.id]) favSumT++
   }
   // п.20b: «★ Сборная» считает ТОЛЬКО избранное (требование пользователя),
   // не все чаты мессенджеров: всего непрочитанных в избранных чатах
@@ -2221,12 +2542,38 @@ async function pollUnread() {
 // «Nov 8»/«11 апр», «12.03») в { at: мс, dayOnly: точность до дня } —
 // для сортировки «по давности последней активности» и показа «дата + время».
 // Не распозналось — { at: 0 } (не участвует в сортировке).
+// A compact date is a day bucket, never a replacement for a known clock time.
+// Call only after the caller has validated the pin/account identity.
+function mergeLastMessageTime(id, observation) {
+  const at = observation && observation.at
+  if (!Number.isFinite(at) || at <= 0) return
+  const dayOnly = observation.dayOnly === true
+  const previous = state.lastMsgAt[id] || 0
+  state.lastMsgDayOnly = state.lastMsgDayOnly || {}
+  // Legacy caches recorded precision in the formatted label, not a separate map.
+  const previousDayOnly = typeof state.lastMsgDayOnly[id] === 'boolean'
+    ? state.lastMsgDayOnly[id] : !/\d{1,2}:\d{2}/.test(state.lastMsgText[id] || '')
+  const sameDay = previous && new Date(previous).toDateString() === new Date(at).toDateString()
+  if (previous && ((sameDay && dayOnly) ||
+      (at < previous && !(sameDay && previousDayOnly && !dayOnly)))) return
+  state.lastMsgAt[id] = at
+  state.lastMsgDayOnly[id] = dayOnly
+  state.lastMsgText[id] = fmtChatWhen(at, dayOnly)
+  state.lastMsgSource = state.lastMsgSource || {}
+  if (observation.source) state.lastMsgSource[id] = {
+    source: observation.source, serviceId: observation.serviceId, canonicalUrl: observation.canonicalUrl,
+    accountId: observation.accountId, peerId: observation.peerId, messageId: observation.messageId, at
+  }
+  else if (at !== previous) delete state.lastMsgSource[id]
+}
+
 function parseChatTime(text) {
   const t = String(text || '').trim()
   if (!t) return { at: 0, dayOnly: false }
   const now = new Date()
   let m
   if ((m = t.match(/^(\d{1,2}):(\d{2})$/))) {
+    if (+m[1] > 23 || +m[2] > 59) return { at: 0, dayOnly: false }
     const d = new Date(now); d.setHours(+m[1], +m[2], 0, 0)
     return { at: d.getTime(), dayOnly: false }
   }
@@ -2246,31 +2593,43 @@ function parseChatTime(text) {
     d.setDate(d.getDate() - diff); d.setHours(12, 0, 0, 0)
     return { at: d.getTime(), dayOnly: true }
   }
-  const monRu = ['янв', 'фев', 'мар', 'апр', 'мая', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+  const monRu = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
   const monEn = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
   const monIdx = w => {
     const wl = w.toLowerCase()
+    if (wl.indexOf('мая') === 0) return 4 // «мая» как отдельная форма мая, без сдвига остальных
     const ru = monRu.findIndex(x => wl.indexOf(x) === 0)
     if (ru >= 0) return ru
     return monEn.findIndex(x => wl.indexOf(x) === 0)
   }
+  // Resolve yearless dates by calendar day, not by the synthetic noon time.
+  // Check components before returning: Date silently normalizes impossible dates.
+  const calendarDate = (month, day, year) => {
+    const today = new Date(now); today.setHours(12, 0, 0, 0)
+    const first = year == null ? now.getFullYear() : year
+    // Eight years cover the longest Gregorian leap-day gap at a century.
+    const last = year == null ? first - 8 : first
+    for (let y = first; y >= last; y--) {
+      const d = new Date(0); d.setFullYear(y, month, day); d.setHours(12, 0, 0, 0)
+      if (d.getFullYear() !== y || d.getMonth() !== month || d.getDate() !== day) continue
+      if (year == null && d > today) continue
+      return { at: d.getTime(), dayOnly: true }
+    }
+    return { at: 0, dayOnly: false }
+  }
   if ((m = t.match(/^(\d{1,2})\s+([a-zа-яё]+)\.?$/i)) && monIdx(m[2]) >= 0) {
-    const d = new Date(now.getFullYear(), monIdx(m[2]), +m[1], 12, 0, 0)
-    if (d > now) d.setFullYear(d.getFullYear() - 1)
-    return { at: d.getTime(), dayOnly: true }
+    return calendarDate(monIdx(m[2]), +m[1])
   }
   if ((m = t.match(/^([a-zа-яё]+)\.?\s+(\d{1,2})$/i)) && monIdx(m[1]) >= 0) {
-    const d = new Date(now.getFullYear(), monIdx(m[1]), +m[2], 12, 0, 0)
-    if (d > now) d.setFullYear(d.getFullYear() - 1)
-    return { at: d.getTime(), dayOnly: true }
+    return calendarDate(monIdx(m[1]), +m[2])
   }
-  if ((m = t.match(/^(\d{1,2})\.(\d{2})(?:\.(\d{2,4}))?$/))) {
-    const yy = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : now.getFullYear()
-    return { at: new Date(yy, +m[2] - 1, +m[1], 12, 0, 0).getTime(), dayOnly: true }
+  if ((m = t.match(/^(\d{1,2})\.(\d{2})(?:\.(\d{2}|\d{4}))?$/))) {
+    const yy = m[3] ? (m[3].length === 2 ? 2000 + +m[3] : +m[3]) : undefined
+    return calendarDate(+m[2] - 1, +m[1], yy)
   }
   // webk в en-локали показывает старые даты как «04/18/2025» (ММ/ДД/ГГГГ)
   if ((m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/))) {
-    return { at: new Date(+m[3], +m[1] - 1, +m[2], 12, 0, 0).getTime(), dayOnly: true }
+    return calendarDate(+m[1] - 1, +m[2], +m[3])
   }
   return { at: 0, dayOnly: false }
 }
@@ -2314,75 +2673,114 @@ function fmtRowTime(ms) {
 // все команды) и упоминаний пользователя (mention_count: личные + @-упоминания).
 // Троттлинг 30 с; сбой молчит (бейдж остаётся прежним).
 async function mmTabCounts() {
+  return runUnreadJob('mm:totals', 'mm', async job => {
   const now = Date.now()
   if (state.mmTabCountsAt && now - state.mmTabCountsAt < 30000) return
   // API зовём из СЕРВИСНОЙ вкладки: первые пин-вьюхи могут быть «скелетом»
   const wv = state.svcViews['mm'] || svcViewFor('mm')
   if (!wv || !wv.executeJavaScript) return
   try {
-    const out = await wv.executeJavaScript(`(async () => {
+    const out = await job.wait(() => unreadGuestCall(wv, 'mm:totals', () => wv.executeJavaScript(`(async () => {
       try {
-        const r = await fetch("/api/v4/users/me/teams/unread", { headers: { "X-Requested-With": "XMLHttpRequest" } }).then(x => x.json());
+        const response = await fetch("/api/v4/users/me/teams/unread", { headers: { "X-Requested-With": "XMLHttpRequest" } });
+        if (!response.ok) return '';
+        const r = await response.json();
         if (!Array.isArray(r) || !r.length) return "";
+        const seen = new Set();
         let t = 0, m = 0;
-        for (const u of r) { t += Number(u.msg_count) || 0; m += Number(u.mention_count) || 0 }
+        for (const u of r) {
+          if (!u || typeof u.team_id !== 'string' || seen.has(u.team_id) ||
+              !Number.isSafeInteger(u.msg_count) || u.msg_count < 0 ||
+              !Number.isSafeInteger(u.mention_count) || u.mention_count < 0) return '';
+          seen.add(u.team_id);
+          t += u.msg_count; m += u.mention_count;
+        }
+        if (!Number.isSafeInteger(t) || !Number.isSafeInteger(m)) return '';
         return JSON.stringify({ t, m });
       } catch (e) { return "" }
-    })()`)
+    })()`)))
     if (!out) return
-    state.mmTabCountsAt = now
     const c = JSON.parse(out)
     if (typeof c.t === 'number') {
+      state.mmTabCountsAt = now
       state.svcTabTotals = state.svcTabTotals || {}
       state.svcTabTotals.mm = { t: c.t, m: c.m }
       updateBadge2('mm', c.t, c.m)
     }
   } catch {}
+  }, 15000)
 }
 
-async function mmLastPosts() {
+async function mmLastPosts(pinId) {
+  const taskKey = pinId ? 'mm:read' : 'mm:posts'
+  return runUnreadJob(taskKey, 'mm', async job => {
   const now = Date.now()
-  if (state.mmChannelsAt && now - state.mmChannelsAt < 30000) return
+  if (!pinId && state.mmChannelsAt && now - state.mmChannelsAt < 30000) return
   const wv = state.svcViews['mm'] || svcViewFor('mm')
   if (!wv) return
-  const mmFavs = favoritesOf('mm')
+  const mmFavs = favoritesOf('mm').filter(p => !pinId || p.id === pinId)
   if (!mmFavs.length) return
   try {
-    const out = await wv.executeJavaScript(`(async () => {
+    const out = await job.wait(() => unreadGuestCall(wv, taskKey, () => wv.executeJavaScript(`(async () => {
       const H = { "X-Requested-With": "XMLHttpRequest" };
       try {
-        const teams = await fetch("/api/v4/users/me/teams", { headers: H }).then(r => r.json());
-        if (!Array.isArray(teams) || !teams.length) return "";
-        let chs = [];
-        for (const tm of teams) { try { const tc = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels", { headers: H }).then(r => r.json()); if (Array.isArray(tc)) chs = chs.concat(tc) } catch (e) {} }
-        if (!chs.length) return "";
-        const uidCache = ${JSON.stringify(state.mmUserIds || {})};
+        const get = async path => {
+          const response = await fetch(path, { headers: H });
+          if (!response.ok) throw new Error('Mattermost metadata request failed');
+          return response.json();
+        };
+        const me = await get('/api/v4/users/me');
+        if (!me || typeof me.id !== 'string' || !me.id) return '';
+        const userPath = '/api/v4/users/' + encodeURIComponent(me.id);
+        // Official all-team membership endpoint (server >= 6.1), including D/G.
+        // No per-team concatenation: DM/group channels are global to the account.
+        const channels = await get(userPath + '/channels');
+        if (!Array.isArray(channels)) return '';
+        const chs = [...new Map(channels.filter(c => c && c.id && !c.delete_at).map(c => [c.id, c])).values()];
+        let teams = [];
+        try { const value = await get(userPath + '/teams'); if (Array.isArray(value)) teams = value } catch (e) {}
+        const uidCache = {}; // resolve usernames anew; never trust another account/old username cache
         const jobs = ${JSON.stringify(mmFavs.map(f => ({ id: f.id, url: f.url })))};
-        for (const j of jobs) {
-          const mm2 = String(j.url).match(/\\/(channels|messages)\\/([^/?#]+)/);
-          if (!mm2 || mm2[1] !== "messages" || mm2[2].charAt(0) !== "@") continue;
-          const u = mm2[2].slice(1);
-          if (uidCache[u]) continue;
-          try { const usr = await fetch("/api/v4/users/username/" + encodeURIComponent(u), { headers: H }).then(r => r.json()); if (usr && usr.id) uidCache[u] = usr.id } catch (e) {}
-        }
-        const memMap = {};
-        for (const tm of teams) { try { const mm3 = await fetch("/api/v4/users/me/teams/" + tm.id + "/channels/members", { headers: H }).then(r => r.json()); if (Array.isArray(mm3)) for (const m of mm3) memMap[m.channel_id] = m } catch (e) {} }
+        const snapshots = new Map();
         const res = [];
         for (const j of jobs) {
-          const mm2 = String(j.url).match(/\\/(channels|messages)\\/([^/?#]+)/);
-          if (!mm2) continue;
-          let ch = null;
-          if (mm2[1] === "messages" && mm2[2].charAt(0) === "@") {
-            const uid = uidCache[mm2[2].slice(1)];
-            if (uid) ch = chs.find(c => c.type === "D" && String(c.name).split("__").indexOf(uid) >= 0);
-          } else { ch = chs.find(c => (c.type === "O" || c.type === "P") && c.name === mm2[2]) }
-          if (ch && ch.last_post_at) {
-            const mem = memMap[ch.id] || {};
-            let prev = "";
+          let route;
+          try {
+            const url = new URL(j.url);
+            if (url.origin !== location.origin) continue;
+            const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+            if (parts.length !== 3 || !['channels', 'messages'].includes(parts[1])) continue;
+            route = { team: parts[0], kind: parts[1], slug: parts[2] };
+          } catch (e) { continue }
+          let matches = [];
+          if (route.kind === 'messages' && route.slug.startsWith('@')) {
+            const username = route.slug.slice(1);
+            if (!Object.prototype.hasOwnProperty.call(uidCache, username)) {
+              uidCache[username] = null;
+              try { const user = await get('/api/v4/users/username/' + encodeURIComponent(username)); if (user && user.username === username && user.id) uidCache[username] = user.id } catch (e) {}
+            }
+            const uid = uidCache[username];
+            if (uid) {
+              const name = [me.id, uid].sort().join('__');
+              matches = chs.filter(c => c.type === 'D' && c.name === name);
+            }
+          } else if (route.kind === 'messages') {
+            // Official group sidebar route uses channel.name, not channel.id.
+            matches = chs.filter(c => c.type === 'G' && c.name === route.slug);
+          } else {
+            const team = teams.filter(t => t && t.name === route.team && t.id);
+            if (team.length === 1) matches = chs.filter(c => (c.type === 'O' || c.type === 'P') && c.team_id === team[0].id && c.name === route.slug);
+          }
+          const ch = matches.length === 1 ? matches[0] : null;
+          if (ch) {
+            if (snapshots.has(ch.id)) { res.push({ ...snapshots.get(ch.id), id: j.id }); continue }
+            let prev = "", messageId = null;
+            if (!${Boolean(pinId)}) {
             try {
               const purl = "/api/v4/channels/" + ch.id + "/posts?per_page=1";
               const pp = await fetch(purl, { headers: H }).then(r => r.json());
               const post = pp && pp.posts && pp.order && pp.order.length ? pp.posts[pp.order[0]] : null;
+              if (post) messageId = post.id || pp.order[0];
               if (post) { if (!post.message && Array.isArray(post.file_ids) && post.file_ids.length) post.message = '[вложение]'; if (post.message) {
                 let uname = "";
                 try {
@@ -2398,33 +2796,54 @@ async function mmLastPosts() {
                 prev = (uname ? uname + ": " : "") + String(post.message).split(String.fromCharCode(13)).join(" ").split(String.fromCharCode(10)).join(" ").split("**").join("").slice(0, 90)
               } }
             } catch (e) {}
-            res.push({ id: j.id, at: ch.last_post_at, count: Number(mem.msg_count) || 0, mentions: Number(mem.mention_count) || 0, preview: prev });
+            }
+            let unreadCount = null, mentions = null, rootCount = null, rootMentions = null;
+            try {
+              // ChannelUnread is authoritative; ChannelMember.msg_count is a read cursor.
+              // No since-post approximation or invented collapsed-thread query parameter.
+              const response = await fetch('/api/v4/users/' + encodeURIComponent(me.id) + '/channels/' + encodeURIComponent(ch.id) + '/unread', { headers: H });
+              if (response.ok) {
+                const unread = await response.json();
+                if (unread && unread.channel_id === ch.id && unread.team_id === ch.team_id &&
+                    Number.isSafeInteger(unread.msg_count) && unread.msg_count >= 0 &&
+                    Number.isSafeInteger(unread.mention_count) && unread.mention_count >= 0) {
+                  unreadCount = unread.msg_count;
+                  mentions = unread.mention_count;
+                  // Total fields include replies. Root fields are separate subsets,
+                  // not extra unread messages; this API has no CRT query parameter.
+                  if (Number.isSafeInteger(unread.msg_count_root) && unread.msg_count_root >= 0) rootCount = unread.msg_count_root;
+                  if (Number.isSafeInteger(unread.mention_count_root) && unread.mention_count_root >= 0) rootMentions = unread.mention_count_root;
+                }
+              }
+            } catch (e) {}
+            const snapshot = { id: j.id, accountId: me.id, channelId: ch.id, at: ch.last_post_at, count: unreadCount, mentions, rootCount, rootMentions, preview: prev, messageId };
+            snapshots.set(ch.id, snapshot);
+            res.push(snapshot);
           }
         }
+        // A logout/account switch during the fetch sequence invalidates the batch.
+        const current = await get('/api/v4/users/me');
+        if (!current || current.id !== me.id) return '';
         return JSON.stringify({ uidCache: uidCache, res: res });
       } catch (e) { return "" }
-    })()`)
+    })()`)))
     if (!out) return
     const d = JSON.parse(out)
     state.mmUserIds = d.uidCache || {}
-    state.mmChannelsAt = now
+    if (!pinId) state.mmChannelsAt = now
     for (const r of (d.res || [])) {
-      if (r.at > (state.lastMsgAt[r.id] || 0)) {
-        state.lastMsgAt[r.id] = r.at
-        state.lastMsgText[r.id] = fmtChatWhen(r.at, false)
-      }
+      mergeLastMessageTime(r.id, { at: r.at, dayOnly: false })
       state.mmPinCounts = state.mmPinCounts || {}
-      state.mmPinCounts[r.id] = { count: r.count || 0, mentions: r.mentions || 0 }
-      if (r.preview) { let pv = String(r.preview); const pinA = state.cfg.pinned.find(p => p.id === r.id); if (pinA && pinA.title && pv.indexOf(String(pinA.title) + ": ") === 0) pv = pv.slice(String(pinA.title).length + 2)
-      const ac = (state.msgAuth || {})[r.id]
-      if (ac && ac.text && pv.indexOf(ac.text) >= 0) {
-        const isDMc = pinA && (/#@/.test(String(pinA.url || '')) || ac.dm)
-        pv = (ac.out ? 'Вы: ' : (!isDMc && ac.name ? ac.name + ': ' : (isDMc && pinA.title ? pinA.title + ': ' : ''))) + ac.text
+      if (typeof r.count === 'number' && Number.isFinite(r.count)) {
+        state.mmPinCounts[r.id] = { count: r.count, mentions: r.mentions || 0, rootCount: r.rootCount, rootMentions: r.rootMentions,
+          accountId: r.accountId, channelId: r.channelId, observedAt: Date.now() }
       }
-      state.lastMsgPreview[r.id] = pv
+      if (r.preview) {
+      state.lastMsgPreview[r.id] = restorePreviewAuthor(r.preview, (state.msgAuth || {})[r.id], r.messageId)
       }
     }
   } catch (e) {}
+  }, pinId ? 4500 : 15000)
 }
 
 // Сортировка избранного сборной вкладки. Главное — время последнего сообщения
@@ -2440,7 +2859,7 @@ function sortFavoritesByActivity() {
   if (!arr || arr.length < 2) return
   const key = (p, i) => {
     // активность = время последнего сообщения; «открыл, но не писал» не бампает
-    const act = Math.max(state.lastMsgAt[p.id] || 0, state.liveAct[p.id] || 0)
+    const act = state.lastMsgAt[p.id] || 0
     if (p.priority) return [3, act, -i]
     if (act) return [2, act, -i]
     const rank = state.rankAct[p.id]
@@ -2503,6 +2922,25 @@ function setRowBadge(row, r) {
 // в строке сразу, картинка подменяет монограмму, когда экстрактор
 // притащит data-URL из webview мессенджера.
 // Аватар из шапки пин-вьюхи (для TG-пинов вне отрисованного списка)
+// Serialized into TG pin guests: URL alone can lead a stale SPA header.
+function __chatHubTgViewOwns(pinUrl) {
+  try {
+    const wanted = new URL(pinUrl), live = new URL(location.href)
+    if (wanted.origin !== live.origin || wanted.pathname !== live.pathname ||
+        wanted.hash.toLowerCase() !== live.hash.toLowerCase()) return false
+    const peer = document.querySelector('.top .peer-title[data-peer-id], .topbar .peer-title[data-peer-id], .chat-info .peer-title[data-peer-id]')
+    const owner = peer && peer.getAttribute('data-peer-id')
+    if (!owner) return false
+    const key = wanted.hash.slice(1)
+    if (/^-?\d+$/.test(key)) return key === owner
+    if (!/^@[A-Za-z0-9_]+$/.test(key)) return false
+    const peers = new Set(Array.from(document.querySelectorAll('a.row-clickable')).filter(r =>
+      String(r.getAttribute('href') || '').toLowerCase() === wanted.hash.toLowerCase())
+      .map(r => r.getAttribute('data-peer-id')).filter(Boolean))
+    return peers.size === 1 && peers.has(owner)
+  } catch { return false }
+}
+
 async function grabAvatarFromPinView(wv, pinUrl) {
   // аватар берём ТОЛЬКО если вьюха показывает именно этот чат (сверка хэша),
   // иначе в строки уезжала аватарка чужого чата из шапки вьюхи
@@ -2511,16 +2949,16 @@ async function grabAvatarFromPinView(wv, pinUrl) {
   if (!want) return ''
   try {
     return await wv.executeJavaScript(`(async () => {
-      const want = ${JSON.stringify(want)}
-      const cur = String(location.hash || '').replace(/^#/, '')
-      if (cur !== want) return ''
-      const img = document.querySelector('.chat-info .avatar img, .top .avatar img, .topbar .avatar img, .avatar img')
+      const owns = () => (${__chatHubTgViewOwns.toString()})(${JSON.stringify(pinUrl)})
+      if (!owns()) return ''
+      const img = document.querySelector('.chat-info .avatar img, .top .avatar img, .topbar .avatar img')
       if (!img || !img.src) return ''
       if (img.src.startsWith('data:')) return img.src
       try {
         const b = await fetch(img.src).then(r => r.blob())
         if (!b || !b.size || b.size > 300000) return ''
-        return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(''); fr.readAsDataURL(b) })
+        const data = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(''); fr.readAsDataURL(b) })
+        return owns() ? data : ''
       } catch (e) { return '' }
     })()`)
   } catch (e) { return '' }
@@ -2533,9 +2971,7 @@ async function grabViewLastMsg(wv, pinUrl) {
   if (!want) return null
   try {
     return await wv.executeJavaScript(`(() => {
-      const want = ${JSON.stringify(want)}
-      const cur = String(location.hash || '').replace(/^#/, '')
-      if (cur !== want) return null
+      if (!(${__chatHubTgViewOwns.toString()})(${JSON.stringify(pinUrl)})) return null
       const bs = [...document.querySelectorAll('.bubbles .bubble')]
       const b = bs[bs.length - 1]
       if (!b) return null
@@ -2557,12 +2993,12 @@ async function grabViewLastMsg(wv, pinUrl) {
 // MAX: последнее сообщение в открытом чате. У пузырей есть
 // data-bubbles-variant="incoming|outgoing" — outgoing = писал пользователь.
 async function grabViewLastMsgMax(wv, pinUrl) {
-  const id = (String(pinUrl || '').match(/\/(\d+)(?:[/?#]|$)/) || [])[1] || ''
+  const id = (String(pinUrl || '').match(/\/(-?\d+)(?:[/?#]|$)/) || [])[1] || ''
   if (!id) return null
   try {
     return await wv.executeJavaScript(`(() => {
-      const id = ${JSON.stringify(id)}
-      if (!String(location.href || '').includes('/' + id)) return null
+      const wanted = new URL(${JSON.stringify(pinUrl)}), live = new URL(location.href)
+      if (wanted.origin !== live.origin || wanted.pathname !== live.pathname) return null
       const msgs = [...document.querySelectorAll('.message')]
       const m = msgs[msgs.length - 1]
       if (!m) return null
@@ -2601,11 +3037,9 @@ async function learnAuthorSweep() {
         const isMax = /web\.max\.ru/.test(String(pin.url || ''))
         const lb = isMax ? await grabViewLastMsgMax(pv, pin.url) : await grabViewLastMsg(pv, pin.url)
         if (!lb || !lb.text) continue
-        let pre = lb.text
-        if (pre.indexOf(String(pin.title) + ': ') === 0) pre = pre.slice(String(pin.title).length + 2)
         state.msgAuth = state.msgAuth || {}
-        state.msgAuth[pin.id] = { text: pre, out: lb.out, name: lb.name, dm: lb.dm }
-        state.lastMsgPreview[pin.id] = (lb.out ? 'Вы: ' : (lb.dm && pin.title ? pin.title + ': ' : (lb.name ? lb.name + ': ' : ''))) + pre
+        state.msgAuth[pin.id] = { ...lb }
+        state.lastMsgPreview[pin.id] = restorePreviewAuthor(state.lastMsgPreview[pin.id], lb)
         const row = document.querySelector('.chat-row[data-pin="' + pin.id + '"]')
         if (row) setRowPreview(row.querySelector('.chat-row-preview'), state.lastMsgPreview[pin.id])
         scheduleActSave()
@@ -2663,14 +3097,27 @@ function __chatHubApplyCss(css) {
   // правила сразу после изменения DOM (дебаунс на rAF; в скрытой вьюхе rAF
   // заморожен — там по-прежнему работает интервал выше)
   if (window.__chatHubCssMo) { try { window.__chatHubCssMo.disconnect() } catch (e) {} }
+  if (window.__chatHubCssCancelPending) window.__chatHubCssCancelPending()
   try {
-    let pending = false
+    let pending = null
+    const cancelPending = () => {
+      if (!pending) return
+      cancelAnimationFrame(pending.frame)
+      clearTimeout(pending.timer)
+      pending = null
+    }
+    window.__chatHubCssCancelPending = cancelPending
     window.__chatHubCssMo = new MutationObserver(() => {
       if (pending) return
-      pending = true
-      const go = () => { pending = false; apply() }
-      requestAnimationFrame(go)
-      setTimeout(go, 100)
+      const job = {}
+      pending = job
+      const go = () => {
+        if (pending !== job) return
+        cancelPending()
+        apply()
+      }
+      job.frame = requestAnimationFrame(go)
+      job.timer = setTimeout(go, 100)
     })
     window.__chatHubCssMo.observe(document.documentElement, { childList: true, subtree: true })
   } catch (e) {}
@@ -2681,6 +3128,7 @@ function __chatHubApplyCss(css) {
 // li.unread = есть непрочитанное; в ЛИЧНЫХ чатах span.badge = число непрочитанных
 // сообщений (идёт в count), в каналах = число упоминаний (идёт в mentions).
 async function __chatHubMmUnread(favs) {
+  const avatarBudget = { attempts: 0 }
   const out = []
   let dmMentions = 0
   let dmUnread = false
@@ -2721,7 +3169,7 @@ async function __chatHubMmUnread(favs) {
         }
       }
     }
-    if (f.needAvatar && rowLi) avatar = await __grabAvatar(rowLi)
+    if (f.needAvatar && rowLi) avatar = await __chatHubBoundedAvatar(rowLi, avatarBudget)
     out.push({ id: f.id, unread: unread, count: count, mentions: mentions, found: found, avatar: avatar })
   }
   return JSON.stringify({ favs: out, dmMentions: dmMentions, dmUnread: dmUnread })
@@ -2736,6 +3184,239 @@ async function __chatHubMmUnread(favs) {
 // пунктуации/регистра → вхождение с любой стороны (пины бывают с полным именем
 // из шапки, строки — с коротким), при неоднозначности не матчуем.
 async function __chatHubTgUnread(favs, allowScroll) {
+  // Session-local, read-only webk identity mirror. Alias lookup never calls a
+  // manager/RPC, persists an alias, or trusts display names/legacy tgPeerOf.
+  const readAliases = () => {
+    const aliases = new Map()
+    const proxy = globalThis.apiManagerProxy, root = globalThis.rootScope
+    const peers = proxy?.mirrors?.peers, account = proxy?.mirrors?.state
+    const accountId = String(root?.myId || '')
+    if (!/^[1-9]\d*$/.test(accountId) || String(account?.userId) !== accountId ||
+        account?.authState?._ !== 'authStateSignedIn' || !peers || !peers[accountId]) return null
+    const wanted = new Set(favs.map(f => (String(f.url || '').match(/^https:\/\/web\.telegram\.org\/k\/#@([A-Za-z0-9_]+)$/) || [])[1]?.toLowerCase()).filter(Boolean))
+    // Only the username field is inspected to filter the existing identity map;
+    // project id/type/photo-presence for requested pins only. No profile dumps.
+    for (const key of Object.keys(peers)) {
+      const peer = peers[key], username = String(peer?.username || '').toLowerCase()
+      if (!wanted.has(username)) continue
+      const peerId = String(peer.id || '')
+      const valid = peer._ === 'user' && /^[1-9]\d*$/.test(peerId) && peerId === key
+      const identity = valid ? { source: 'webk-account-peer', accountId, username, peerId, photoPresent: !!peer.photo } : null
+      aliases.set(username, aliases.has(username) ? null : identity)
+    }
+    return { aliases, peers, account, accountId }
+  }
+  const aliasSnapshot = readAliases()
+  const existingPhotos = window.__hubTgPhotos
+  if (existingPhotos && (!aliasSnapshot || existingPhotos.peers !== aliasSnapshot.peers || existingPhotos.account !== aliasSnapshot.account)) {
+    existingPhotos.entries.clear()
+    existingPhotos.peers = aliasSnapshot?.peers || null
+    existingPhotos.account = aliasSnapshot?.account || null
+  }
+  // Proven webk contract: loadAvatar(Number(peerId), userProfilePhoto, 'photo_small').
+  // Downloads only the small photo, never opens a dialog or reads messages.
+  // Do not await optional work: completed bytes are consumed on a later poll.
+  let photoStarts = 0
+  const photoProofs = new Map()
+  const metadataAvatar = identity => {
+    if (!identity || !aliasSnapshot) return null
+    const proxy = globalThis.apiManagerProxy
+    const peer = aliasSnapshot.peers[identity.peerId], photo = peer?.photo
+    const numberId = Number(identity.peerId)
+    if (!Number.isSafeInteger(numberId) || numberId <= 0 || photo?._ !== 'userProfilePhoto' ||
+        peer.pFlags?.min || typeof proxy?.loadAvatar !== 'function') return null
+    const photoKey = `${photo.photo_id}:${photo.dc_id}`
+    if (!/^\d+:\d+$/.test(photoKey)) return null
+    const pool = window.__hubTgPhotos || (window.__hubTgPhotos = { pending: new Set(), entries: new Map() })
+    // Pending slots survive resets: timeouts/account changes cannot multiply RPCs.
+    if (pool.peers !== aliasSnapshot.peers || pool.account !== aliasSnapshot.account) {
+      pool.entries.clear(); pool.peers = aliasSnapshot.peers; pool.account = aliasSnapshot.account
+    }
+    const key = `${identity.accountId}:${identity.username}:${identity.peerId}:${photoKey}`
+    const current = () => {
+      const now = readAliases(), own = now?.aliases.get(identity.username)
+      const live = now?.peers[identity.peerId]
+      return now && now.peers === aliasSnapshot.peers && now.account === aliasSnapshot.account &&
+        now.accountId === identity.accountId && own?.peerId === identity.peerId &&
+        live?.photo?._ === 'userProfilePhoto' && `${live.photo.photo_id}:${live.photo.dc_id}` === photoKey
+    }
+    if (!current()) return null
+    const cached = pool.entries.get(key)
+    if (cached && (cached.pending || Date.now() - cached.at < 60000)) {
+      if (cached.data) photoProofs.set(identity.username, current)
+      return cached.data || null
+    }
+    if (photoStarts >= 2 || pool.pending.size >= 2) return null
+    photoStarts++
+    if (pool.entries.size >= 32) {
+      const victim = [...pool.entries].find(([, value]) => !value.pending)
+      if (!victim) return null
+      pool.entries.delete(victim[0])
+    }
+    const entry = { at: Date.now(), data: null, pending: true }
+    pool.entries.set(key, entry)
+    const token = {}; pool.pending.add(token)
+    ;(async () => {
+      let timer, controller
+      try {
+        const url = await proxy.loadAvatar(numberId, photo, 'photo_small')
+        if (!current() || typeof url !== 'string' || !url.startsWith('blob:https://web.telegram.org/')) return
+        controller = new AbortController()
+        timer = setTimeout(() => controller.abort(), 1500)
+        const response = await fetch(url, { signal: controller.signal })
+        if (!response.ok) return
+        const blob = await response.blob()
+        if (!/^image\/(jpeg|png|webp)$/.test(blob.type) || blob.size <= 0 || blob.size > 65536) return
+        const bytes = new Uint8Array(await blob.arrayBuffer())
+        if (bytes.length !== blob.size || !current() || pool.entries.get(key) !== entry) return
+        let binary = ''; for (const byte of bytes) binary += String.fromCharCode(byte)
+        entry.data = `data:${blob.type};base64,${btoa(binary)}`
+      } catch (_) { /* Unknown, not a no-photo claim; retry cooldown remains. */ }
+      finally { clearTimeout(timer); entry.pending = false; entry.at = Date.now(); pool.pending.delete(token) }
+    })()
+    return null
+  }
+  // Loaded worker src/lib/storages/dialogs.ts: getDialogOnly is a direct
+  // this.dialogs[peerId] read. Only user peers are verified here (no forum math).
+  // Never retain unread snapshots across polls: an old positive cannot hide a read.
+  const dialogPool = window.__hubTgDialogs || (window.__hubTgDialogs = { pending: new Set(), generation: 0 })
+  const dialogGeneration = favs.some(f => f.needDialogMetadata === true || f.needMessageMetadata === true) ? ++dialogPool.generation : dialogPool.generation
+  const dialogManager = globalThis.rootScope?.managers?.dialogsStorage
+  const dialogResults = new Map()
+  const messageTimes = new Map(), messageProofs = new Map()
+  const messageRequested = new Set()
+  const messageProxy = globalThis.apiManagerProxy, messageMirror = messageProxy?.mirrors?.messages
+  const numericIdentity = (url, snapshot) => {
+    const peerId = (String(url || '').match(/^https:\/\/web\.telegram\.org\/k\/#(-?[1-9]\d*)$/) || [])[1]
+    const n = Number(peerId), peer = snapshot?.peers[peerId]
+    if (!peer || !Number.isSafeInteger(n) || !n || peer.id !== Math.abs(n) ||
+        !(n > 0 ? peer._ === 'user' : ['chat', 'channel'].includes(peer._))) return null
+    return { source: 'webk-account-peer', accountId: snapshot.accountId, username: '', peerId, kind: peer._ }
+  }
+  const ownsDialog = (identity, d) => {
+    const peer = d?.peer, n = Number(identity.peerId)
+    return d?._ === 'dialog' && (n > 0 ? peer?._ === 'peerUser' && peer.user_id === n :
+      identity.kind === 'chat' ? peer?._ === 'peerChat' && peer.chat_id === -n :
+      identity.kind === 'channel' && peer?._ === 'peerChannel' && peer.channel_id === -n)
+  }
+  // Loaded proxy: history key + global-ID routing read ONLY its local mirror.
+  // Do not use getMessageByPeer (logs fallback), history, fetch or message RPCs.
+  const cachedTime = (identity, d) => {
+    if (!messageMirror || messageProxy?.mirrors?.messages !== messageMirror ||
+        typeof messageProxy.getHistoryMessagesStorage !== 'function' ||
+        typeof messageProxy.getMessageFromStorage !== 'function') return null
+    const mid = d.top_message
+    if (!Number.isSafeInteger(mid) || mid <= 0) return null
+    const key = messageProxy.getHistoryMessagesStorage(Number(identity.peerId))
+    const m = messageProxy.getMessageFromStorage(key, mid)
+    if (!m || !['message', 'messageService'].includes(m._) || m.mid !== mid ||
+        String(m.peerId) !== identity.peerId || !Number.isSafeInteger(m.date) ||
+        m.date <= 0 || !Number.isSafeInteger(m.date * 1000)) return null
+    const at = m.date * 1000
+    if (!Number.isFinite(new Date(at).getTime())) return null
+    messageProofs.set(identity.peerId, () => {
+      try { return messageProxy === globalThis.apiManagerProxy &&
+        messageProxy.mirrors.messages === messageMirror &&
+        messageProxy.getMessageFromStorage(key, mid) === m && m.mid === mid &&
+        String(m.peerId) === identity.peerId && m.date * 1000 === at }
+      catch (_) { return false }
+    })
+    return { at, dayOnly: false, source: 'webk-top-message-cache',
+      accountId: identity.accountId, peerId: identity.peerId, messageId: String(mid) }
+  }
+  // UI-only projection of one proven current top message; never log/return the
+  // cache object, entities, media payloads or unrelated profile fields.
+  const cachedPreview = (identity, time) => {
+    if (!time || !dialogCurrent(identity) || !messageProofs.get(identity.peerId)?.()) return null
+    const key = messageProxy.getHistoryMessagesStorage(Number(identity.peerId))
+    const m = messageProxy.getMessageFromStorage(key, Number(time.messageId))
+    if (!m || !['message', 'messageService'].includes(m._) || String(m.mid) !== time.messageId ||
+        String(m.peerId) !== identity.peerId || !m.pFlags || typeof m.pFlags !== 'object' ||
+        ![undefined, true, false].includes(m.pFlags.out)) return null
+    const compact = (value, limit) => typeof value === 'string' ? value.slice(0, 4096).replace(/\s+/g, ' ').trim().slice(0, limit) : ''
+    const out = m.pFlags?.out === true
+    const senderId = Number.isSafeInteger(m.fromId) && m.fromId !== 0 ? String(m.fromId) : ''
+    const sender = senderId && aliasSnapshot.peers[senderId]
+    let author = out || (identity.peerId === identity.accountId && senderId === identity.accountId) ? 'Вы' : ''
+    if (!author && sender && sender.id === Math.abs(Number(senderId))) {
+      if (sender._ === 'user' && Number(senderId) > 0) author = compact([compact(sender.first_name, 128), compact(sender.last_name, 128)].filter(Boolean).join(' '), 128) || compact(sender.username, 128)
+      else if (Number(senderId) < 0 && ['chat', 'channel'].includes(sender._)) author = compact(sender.title, 128)
+    }
+    const kind = m._ === 'messageService' ? 'service' : 'message'
+    const text = kind === 'service' ? '[Служебное сообщение]' : compact(m.message, 240)
+    const mediaType = kind === 'message' ? m.media?._ : ''
+    const media = { messageMediaPhoto: '[Фото]', messageMediaDocument: '[Документ]', messageMediaPoll: '[Опрос]', messageMediaGeo: '[Геопозиция]', messageMediaGeoLive: '[Геопозиция]', messageMediaContact: '[Контакт]', messageMediaWebPage: '[Ссылка]' }
+    const body = text || media[mediaType] || (mediaType && mediaType !== 'messageMediaEmpty' ? '[Медиа]' : '[Пустое сообщение]')
+    if (!dialogCurrent(identity) || !messageProofs.get(identity.peerId)?.()) return null
+    return { source: 'webk-top-message-cache', accountId: identity.accountId, peerId: identity.peerId,
+      messageId: time.messageId, out, senderId, author, kind: kind === 'service' ? kind : mediaType && mediaType !== 'messageMediaEmpty' ? 'media' : text ? 'text' : 'empty',
+      text: body, preview: author ? author + ': ' + body : body }
+  }
+  const dialogCurrent = identity => {
+    const now = readAliases()
+    return dialogPool.generation === dialogGeneration && now && aliasSnapshot &&
+      now.account === aliasSnapshot.account && now.peers === aliasSnapshot.peers &&
+      now.accountId === identity.accountId && (identity.username
+        ? now.aliases.get(identity.username)?.peerId === identity.peerId
+        : numericIdentity('https://web.telegram.org/k/#' + identity.peerId, now)?.kind === identity.kind) &&
+      globalThis.rootScope?.managers?.dialogsStorage === dialogManager
+  }
+  if (aliasSnapshot && typeof dialogManager?.getDialogOnly === 'function') {
+    const requested = new Map()
+    for (const f of favs) {
+      if (f.needDialogMetadata !== true && f.needMessageMetadata !== true) continue // service view explicitly grants access
+      const name = (String(f.url || '').match(/^https:\/\/web\.telegram\.org\/k\/#@([A-Za-z0-9_]+)$/) || [])[1]?.toLowerCase()
+      const numeric = numericIdentity(f.url, aliasSnapshot)
+      const identity = aliasSnapshot.aliases.get(name) ||
+        (f.needMessageMetadata === true || numeric?.kind === 'user' ? numeric : null)
+      if (identity && requested.size < 64) {
+        requested.set(identity.peerId, identity)
+        if (f.needMessageMetadata === true) messageRequested.add(identity.peerId)
+      }
+    }
+    const queue = [...requested.values()], deadline = Date.now() + 800
+    const worker = async () => {
+      while (queue.length && Date.now() < deadline && dialogPool.pending.size < 2) {
+        const identity = queue.shift(), peerId = Number(identity.peerId)
+        if (!Number.isSafeInteger(peerId) || !peerId || !dialogCurrent(identity)) continue
+        const token = {}; dialogPool.pending.add(token)
+        try {
+          const d = await dialogManager.getDialogOnly(peerId)
+          if (messageRequested.has(identity.peerId) && dialogCurrent(identity) &&
+              Date.now() < deadline && ownsDialog(identity, d)) {
+            try {
+              const time = cachedTime(identity, d)
+              if (time) {
+                const latest = await dialogManager.getDialogOnly(peerId)
+                if (dialogCurrent(identity) && Date.now() < deadline && ownsDialog(identity, latest) &&
+                    String(latest.top_message) === time.messageId && messageProofs.get(identity.peerId)?.()) {
+                  messageTimes.set(identity.peerId, time)
+                }
+              }
+            } catch (_) { /* Optional timestamp failure cannot suppress unread. */ }
+          }
+          if (!dialogCurrent(identity) || Date.now() >= deadline || d?._ !== 'dialog' ||
+              d.peer?._ !== 'peerUser' || String(d.peer.user_id) !== identity.peerId ||
+              !Number.isSafeInteger(d.unread_count) || d.unread_count < 0 ||
+              !Number.isSafeInteger(d.unread_mentions_count) || d.unread_mentions_count < 0 ||
+              !d.pFlags || typeof d.pFlags !== 'object' ||
+              ![undefined, true, false].includes(d.pFlags.unread_mark)) continue
+          // unread_mark is an optional true flag: loaded update handler deletes
+          // it on read. A missing flags container/counter is NOT a verified zero.
+          dialogResults.set(identity.peerId, { count: d.unread_count, mentions: d.unread_mentions_count,
+            manualUnread: d.pFlags.unread_mark === true,
+            unreadSource: { source: 'webk-dialogsStorage', accountId: identity.accountId,
+              peerId: identity.peerId, generation: dialogGeneration, observedAt: Date.now() } })
+        } catch (_) { /* Missing/error stays unknown; no reloadConversation fallback. */ }
+        finally { dialogPool.pending.delete(token) }
+      }
+    }
+    if (queue.length && dialogPool.pending.size < 2) {
+      let timer
+      try { await Promise.race([Promise.all([worker(), worker()]), new Promise(resolve => { timer = setTimeout(resolve, 800) })]) }
+      finally { clearTimeout(timer); queue.length = 0 }
+    }
+  }
   const parseN = s => {
     const m = String(s || '').trim().match(/^([\d.,]+)\s*([KКММ]?)/i)
     if (!m) return 0
@@ -2765,16 +3446,17 @@ async function __chatHubTgUnread(favs, allowScroll) {
           mentions = parseN(bd.textContent) || 1
         }
       }
-      const st = r.querySelector('.dialog-subtitle')
+      const pinnedRow = favs.some(f => {
+        const hash = String(f.url || '').split('#')[1] || ''
+        const alias = aliasSnapshot?.aliases.get(hash.replace(/^@/, '').toLowerCase())
+        return hash === pid || alias?.peerId === pid || '#' + hash === r.getAttribute('href')
+      })
+      // Cache-enabled polls never read sidebar subtitles: those may be drafts.
+      const st = pinnedRow && !messageMirror && !favs.some(f => f.needDialogMetadata || f.needMessageMetadata || f.needMessagePreview) ? r.querySelector('.dialog-subtitle') : null
       let preview = st ? String(st.textContent || '').replace(/\s+/g, ' ').trim() : ''
       preview = preview.replace(/^(\d{1,2}:\d{2}|\d{2}\.\d{2}(\.\d{2})?)\s+/, '').slice(0, 90)
       if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
-      // автор в превью: webk отдаёт «You:» только для своих; в личках входящие — без автора.
-      // Дописываем сами: своё → «Вы:», входящее в личке (@username/#-id с одной стороны) → «{title}:».
-      const isDM = /#@/.test(r.getAttribute('href') || '')
-      if (!/^[^:]{2,30}:/.test(preview)) {
-        preview = (isDM && title ? title + ': ' + preview : preview)
-      }
+      // Missing sender metadata remains unknown; a chat title is not evidence.
       if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
       list.push({
         pid: pid,
@@ -2786,51 +3468,42 @@ async function __chatHubTgUnread(favs, allowScroll) {
         unreadTitle: /unreadPeerTitle/.test(String(t.className)),
         preview: preview,
         idx: idx,
-        el: r
+        el: pinnedRow ? (() => {
+          const shell = r.cloneNode(false), avatar = r.querySelector('.dialog-avatar')
+          if (avatar) shell.appendChild(avatar.cloneNode(true))
+          if (t?.cloneNode && shell.appendChild) shell.appendChild(t.cloneNode(true))
+          return shell
+        })() : null
       })
     })
     return list
   }
-  const seen = new Map()
-  collect().forEach(x => { if (!seen.has(x.pid)) seen.set(x.pid, x) })
-  // Аватарный свип: webk виртуализирует список — в DOM только видимые
-  // строки, аватарки нижних чатов («Агасиев» и др.) добираются только
-  // прокруткой. Раз в 15 с, пока есть избранные без аватарки, проходим
-  // список шагами (+600 px, scroll-событие, пауза на перерисовку — как
-  // tgScrollLoad) и собираем строки в общий пул. Прокрутка невидима:
-  // свип идёт только когда вкладка сервиса не на экране (allowScroll).
-  if (allowScroll && favs.some(f => f.needAvatar || f.needUnread) &&
-      Date.now() - (window.__hubAvSweepAt || 0) > 15000) {
-    window.__hubAvSweepAt = Date.now()
-    const scr = () => {
-      const cs = Array.from(document.querySelectorAll('.chatlist-parts'))
-        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50 })
-      return cs[0] || null
-    }
-    const supH = (() => { const s = document.querySelector('.search-super'); return s ? s.getBoundingClientRect().height : 0 })()
-    if (supH < 50 && scr()) {
-      for (let step = 0; step < 60; step++) {
-        const c = scr()
-        if (!c) break
-        const before = c.scrollTop
-        c.scrollTop = Math.min(c.scrollTop + 800, c.scrollHeight)
-        c.dispatchEvent(new Event('scroll', { bubbles: true }))
-        await sleep(300)
-        collect().forEach(x => { if (!seen.has(x.pid)) seen.set(x.pid, x) })
-        if (c.scrollTop === before) break // дно списка
-      }
-      try { const c = scr(); if (c) c.scrollTop = 0 } catch (e) {}
-    }
-  }
-  const rows = Array.from(seen.values())
+  const avatarBudget = { attempts: 0 }
+  const supH = (() => { const s = document.querySelector('.search-super'); return s ? s.getBoundingClientRect().height : 0 })()
+  const rows = await __chatHubScanRows(() => collect().map(r => ({ ...r, key: r.pid })), '.chatlist-parts', 'tg',
+    allowScroll && !favs.some(f => f.needDialogMetadata === true && /^https:\/\/web\.telegram\.org\/k\/#(?:@[A-Za-z0-9_]+|[1-9]\d*)$/.test(f.url || '')) && supH < 50 && favs.some(f => f.needAvatar || f.needUnread))
   const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
   const out = []
   for (const f of favs) {
-    // pid: сначала из кэша сопоставлений (state.tgPeerOf — проброшен сюда),
-    // затем числовой из URL (#-5505486531); #@имя — по названию строки
-    const pid = f.pid || (String(f.url).match(/#(-?\d+)/) || [])[1] || ''
-    let row = pid ? (rows.find(x => x.pid === pid) || null) : null
+    // Canonical numeric IDs and username links never fall back to titles.
+    const urlPid = (String(f.url || '').match(/#(-?\d+)$/) || [])[1] || ''
+    const username = (String(f.url || '').match(/#(@[A-Za-z0-9_]+)$/) || [])[1] || ''
+    // A canonical address outranks stale cache and all title heuristics.
+    // Username aliases require direct evidence; a legacy numeric cache alone
+    // does not prove that the username still belongs to that peer.
+    const aliasName = username.slice(1).toLowerCase()
+    const canonicalUsername = /^https:\/\/web\.telegram\.org\/k\/#@[A-Za-z0-9_]+$/.test(f.url || '')
+    let identity = canonicalUsername && aliasSnapshot?.aliases.get(aliasName) || null
+    const links = username ? rows.filter(x => x.u.toLowerCase() === '#' + username.toLowerCase()) : []
+    const identityScoped = !!username && (!!globalThis.apiManagerProxy || !!f.identityKey)
+    const conflict = !!username && (identityScoped && !identity || identity && links.some(x => x.pid !== identity.peerId))
+    if (conflict) identity = null
+    const pid = urlPid || identity?.peerId || (!username ? String(f.pid || '') : '')
+    const matches = conflict ? [] : username && !identity ? links : rows.filter(x => pid && x.pid === pid)
+    const uniquePeers = new Set(matches.map(x => x.pid))
+    let row = uniquePeers.size === 1 ? matches[0] : null
     let rowExact = !!row // pid = точная идентичность: аватар/совпадение надёжны
+    let fuzzyUnique = false // единственный кандидат по словам названия — тоже безопасен для аватара
     // Самоочистка отравленного pid-кэша: строка по pid найдена, но заголовок
     // не пересекается с заголовком пина (ни одного слова >= 4 символов) и pid
     // не из URL пина — кэш устарел/ошибочен, строку не засчитываем
@@ -2838,7 +3511,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
     if (row) {
       const upid = (String(f.url || '').match(/#(-?\d+)/) || [])[1]
       const urlExact = upid && String(upid) === String(row.pid)
-      if (f.pid && !urlExact) {
+      if (f.pid && !urlExact && !username) {
         const ns = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
         const stopW = new Set(['ext', 'int', 'астра', 'astrа', 'astra', 'chat', 'чат', 'группа', 'team', 'test', 'rb', 'vm'])
         const ws = String(f.title || '').split(/[\s|,/()]+/).map(w => ns(w)).filter(w => w.length >= 4 && !stopW.has(w))
@@ -2847,7 +3520,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
         if (!ok) { pidStale = true; row = null; rowExact = false }
       }
     }
-    if (!row && f.title) {
+    if (!row && !urlPid && !username && !pid && f.title) {
       const ft = String(f.title).trim()
       let cands = rows.filter(x => x.title.trim() === ft)
       const exactOnly = cands.length > 0
@@ -2865,18 +3538,7 @@ async function __chatHubTgUnread(favs, allowScroll) {
         const words = ft.split(/[\s|,/()]+/).map(w => norm(w)).filter(w => w.length >= 3 && !stop.has(w))
         if (words.length) cands = rows.filter(x => { const n = norm(x.title); return n && words.every(w => n.indexOf(w) >= 0) })
       }
-      if (cands.length === 1) { row = cands[0]; rowExact = exactOnly }
-      else if (cands.length > 1) {
-        cands.sort((a, b) => b.title.length - a.title.length)
-        const bn = norm(cands[0].title)
-        if (cands.filter(c => norm(c.title) === bn).length === 1) row = cands[0]
-      }
-    }
-    // фолбэк для @username-пинов: пин сохранён как #@имя (числового peer-id
-    // нет), заголовок пина пользовательский — матчу строку по её href
-    if (!row) {
-      const uname = (String(f.url).match(/#(@[-\w]+)/) || [])[1]
-      if (uname) { row = rows.find(x => x.u === '#' + uname) || null; if (row) rowExact = true }
+      if (cands.length === 1) { row = cands[0]; rowExact = exactOnly; fuzzyUnique = !exactOnly }
     }
     let unread = false
     let count = 0
@@ -2894,9 +3556,96 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (count > 0 || row.unreadTitle) unread = true
       // аватар только при точном совпадении строки: нечёткий матч давал
       // чужое фото (два чата одного человека получали одну аватарку)
-      if (f.needAvatar && rowExact) avatar = await __grabAvatar(row.el)
+      const identityChanged = typeof f.identityKey === 'string' && identity && f.identityKey !== `${identity.accountId}:${identity.username}:${identity.peerId}`
+      if ((f.needAvatar || identityChanged) && (rowExact || fuzzyUnique)) avatar = await __chatHubBoundedAvatar(row.el, avatarBudget)
     }
-    out.push({ id: f.id, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, exact: rowExact, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? ((row.preview || '')) : '' })
+    if (!avatar && f.needAvatar && f.needMetadataAvatar === true && identity) avatar = metadataAvatar(identity)
+    // Numeric user IDs use the same verified dialog projection, not DOM presence.
+    // Keep this proof separate from username/avatar identity and signed-peer time.
+    const numericUser = numericIdentity(f.url, aliasSnapshot)
+    const dialogScoped = f.needDialogMetadata === true && (canonicalUsername || /^https:\/\/web\.telegram\.org\/k\/#[1-9]\d*$/.test(f.url || ''))
+    const dialogIdentity = identity || (dialogScoped && numericUser?.kind === 'user' ? numericUser : null)
+    const dialog = dialogIdentity && dialogCurrent(dialogIdentity) && dialogResults.get(dialogIdentity.peerId)
+    if (dialogScoped && !dialog) { found = false; count = 0; mentions = 0; unread = false }
+    if (dialog) {
+      found = true; count = dialog.count; mentions = dialog.mentions
+      unread = count > 0 || mentions > 0 || dialog.manualUnread
+    }
+    out.push({ id: f.id, dialogScoped, dialogIdentity, identityScoped, identity, unreadSource: dialog?.unreadSource || null, manualUnread: dialog ? dialog.manualUnread : null, unread: unread, count: count, mentions: mentions, rank: rank, time: time, found: found, exact: rowExact, pid: row ? row.pid : null, rowTitle: row ? row.title : '', pidStale: pidStale, avatar: avatar, preview: row ? ((row.preview || '')) : '' })
+  }
+  // Recheck after every asynchronous collection/avatar phase. Mirror replacement
+  // is the webk account-reset boundary; usernames can also change in-place.
+  const finalAliases = readAliases()
+  const sameAccount = !aliasSnapshot || finalAliases && finalAliases.peers === aliasSnapshot.peers &&
+    finalAliases.account === aliasSnapshot.account && finalAliases.accountId === aliasSnapshot.accountId
+  const previewDeadline = Date.now() + 800
+  for (let i = 0; i < out.length; i++) {
+    const r = out[i], current = r.identity && finalAliases?.aliases.get(r.identity.username)
+    const photoProof = photoProofs.get(r.identity?.username)
+    if (photoProof && !photoProof()) r.avatar = null
+    const timeIdentity = r.identity || (!r.identityScoped && numericIdentity(favs[i].url, aliasSnapshot))
+    r.messageIdentity = favs[i].needMessageMetadata === true && timeIdentity && dialogCurrent(timeIdentity) ? timeIdentity : null
+    r.messageTime = favs[i].needMessageMetadata === true && timeIdentity && dialogCurrent(timeIdentity) && messageProofs.get(timeIdentity.peerId)?.()
+      ? messageTimes.get(timeIdentity.peerId) || null : null
+    r.previewScoped = favs[i].needMessagePreview === true
+    if (r.previewScoped) r.preview = ''
+    if (r.previewScoped && r.messageTime && sameAccount && dialogPool.pending.size < 2 && Date.now() < previewDeadline) {
+      const token = {}; dialogPool.pending.add(token)
+      let timer
+      // Recheck top_message AFTER row/avatar awaits and BEFORE touching a body.
+      // A timeout retains its physical slot until the local manager call settles.
+      try {
+        const pending = Promise.resolve().then(() => dialogManager.getDialogOnly(Number(timeIdentity.peerId)))
+          .finally(() => dialogPool.pending.delete(token))
+        const latest = await Promise.race([pending, new Promise(resolve => { timer = setTimeout(resolve, Math.max(0, previewDeadline - Date.now())) })])
+        if (Date.now() < previewDeadline && dialogCurrent(timeIdentity) && ownsDialog(timeIdentity, latest) &&
+            String(latest.top_message) === r.messageTime.messageId) {
+          r.previewReady = true
+        }
+      } catch (_) { /* Unknown preview; never expose cache errors or contents. */ }
+      finally { clearTimeout(timer) }
+    }
+    if (r.dialogIdentity && !dialogCurrent(r.dialogIdentity)) {
+      r.dialogIdentity = null
+      r.found = false; r.unreadSource = null; r.manualUnread = null
+      r.unread = false; r.count = 0; r.mentions = 0
+    }
+    if (!sameAccount || r.identity && (!current || current.peerId !== r.identity.peerId)) {
+      out[i] = { id: r.id, previewScoped: r.previewScoped, dialogScoped: r.dialogScoped, unreadSource: null, manualUnread: null, identityScoped: r.identityScoped, identity: null, found: false, exact: false, pid: null, avatar: null,
+        unread: false, count: 0, mentions: 0, rank: 9999, time: null, preview: '' }
+    }
+  }
+  // Later pin confirmations can await: invalidate earlier projections if the
+  // account, alias, message cache or generation changed meanwhile.
+  for (let i = 0; i < out.length; i++) {
+    const r = out[i], identity = r.messageIdentity
+    const now = readAliases()
+    const accountCurrent = !aliasSnapshot || now && now.peers === aliasSnapshot.peers &&
+      now.account === aliasSnapshot.account && now.accountId === aliasSnapshot.accountId
+    if (!accountCurrent || r.identity && now?.aliases.get(r.identity.username)?.peerId !== r.identity.peerId) {
+      out[i] = { id: r.id, previewScoped: r.previewScoped, identityScoped: r.identityScoped,
+        dialogScoped: r.dialogScoped, identity: null, dialogIdentity: null, messageIdentity: null,
+        messageTime: null, messagePreview: null, found: false, exact: false, pid: null, preview: '', avatar: null,
+        unreadSource: null, unread: false, count: 0, mentions: 0 }
+      continue
+    }
+    if (r.messageTime && (!identity || !dialogCurrent(identity) || !messageProofs.get(identity.peerId)?.())) {
+      r.messageTime = null; r.messageIdentity = null
+    }
+    if (r.dialogIdentity && !dialogCurrent(r.dialogIdentity)) {
+      r.dialogIdentity = null; r.found = false; r.unreadSource = null
+      r.manualUnread = null; r.unread = false; r.count = 0; r.mentions = 0
+    }
+    if (r.previewScoped) {
+      r.messagePreview = null; r.preview = ''; r.messageId = null
+      if (r.previewReady && identity && dialogCurrent(identity) && messageProofs.get(identity.peerId)?.()) {
+        try {
+          r.messagePreview = cachedPreview(identity, r.messageTime)
+          if (r.messagePreview) { r.preview = r.messagePreview.preview; r.messageId = r.messagePreview.messageId }
+        } catch (_) { /* Missing contract is unknown; no diagnostic contents. */ }
+      }
+      delete r.previewReady
+    }
   }
   // п.20: суммы по ВСЕМ строкам списка (не только избранному) — на вкладку TG:
   // всего непрочитанных (все бейджи, включая серые заглушенных) и упоминания
@@ -2907,11 +3656,11 @@ async function __chatHubTgUnread(favs, allowScroll) {
     svcTotal += parseN(String(r.unreadTxt || '').replace(/^@/, ''))
     svcMentions += r.mentions || 0
   }
-  return JSON.stringify({ favs: out, svcTotals: { total: svcTotal, mentions: svcMentions } })
+  return JSON.stringify({ favs: out, svcTotals: null, observedTotals: { total: svcTotal, mentions: svcMentions }, coverage: { complete: false } })
 }
 
 // MAX: строка чата по названию (span.name — НЕ span.text, это текст последнего
-// сообщения), число в строке = непрочитанные (упоминаний не видно).
+// сообщения), число в .indicator = непрочитанные (упоминаний не видно).
 // Позиция строки = активность: список MAX отсортирован по свежести.
 function formatMaxPreview(text, author) {
   let preview = String(text || '').replace(/\s+/g, ' ').trim()
@@ -2927,35 +3676,89 @@ function formatMaxPreview(text, author) {
   return preview
 }
 
-async function __chatHubMaxUnread(favs, allowScroll) {
-  // MAX виртуализирует список: нижние чаты не попадают в DOM, пока не доскроллишь.
-  // Периодически проходим список прокруткой, чтобы превью и непрочитанные
-  // доезжали и для нижних избранных чатов. Чат при этом не открывается.
-  if (allowScroll && favs.some(f => f.needAvatar || f.needUnread) &&
-      Date.now() - (window.__hubMaxSweepAt || 0) > 15000) {
-    window.__hubMaxSweepAt = Date.now()
-    const scr = () => {
-      const cs = Array.from(document.querySelectorAll('.scrollable.scrollListScrollable'))
-        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50 })
-      return cs[0] || null
-    }
-    const c = scr()
-    if (c) {
-      for (let step = 0; step < 40; step++) {
-        const before = c.scrollTop
-        c.scrollTop = Math.min(c.scrollTop + 700, c.scrollHeight)
-        c.dispatchEvent(new Event('scroll', { bubbles: true }))
-        await new Promise(z => setTimeout(z, 250))
-        if (c.scrollTop === before) break
+// One short chunk per guest. Only a numeric cursor survives between calls;
+// observations/DOM snapshots belong to this response, never become falsely fresh.
+// collect() must synchronously copy values or detach rows before the next await.
+async function __chatHubScanRows(collect, selector, key, allowScroll) {
+  const rows = new Map()
+  const take = () => { for (const r of collect()) rows.set(r.key, r) }
+  take()
+  const focused = () => typeof document.hasFocus === 'function' && document.hasFocus()
+  const scans = window.__hubVirtualScans || (window.__hubVirtualScans = {})
+  const scan = scans[key] || (scans[key] = { cursor: 0, at: 0, busy: false })
+  if (!allowScroll || focused() || scan.busy || Date.now() - scan.at < 15000) return [...rows.values()]
+  const c = Array.from(document.querySelectorAll(selector)).find(c => {
+    const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50
+  })
+  if (!c) return [...rows.values()]
+  scan.busy = true
+  scan.at = Date.now()
+  const original = c.scrollTop, started = Date.now()
+  let expected = original
+  const safe = () => !focused() && !window.__hubVirtualSweepBlocked && c.isConnected !== false && c.scrollTop === expected
+  const move = value => { c.scrollTop = value; expected = c.scrollTop; c.dispatchEvent(new Event('scroll', { bubbles: true })) }
+  try {
+    if (safe()) {
+      move(Math.min(scan.cursor, Math.max(0, c.scrollHeight - c.clientHeight)))
+      for (let step = 0; step < 16; step++) {
+        await new Promise(resolve => setTimeout(resolve, 150))
+        if (!safe()) break
+        take()
+        const next = Math.min(c.scrollTop + Math.max(1, c.clientHeight * 0.8), Math.max(0, c.scrollHeight - c.clientHeight))
+        scan.cursor = next <= c.scrollTop ? 0 : next
+        if (next <= c.scrollTop || step === 15 || Date.now() - started >= 2400) break
+        move(next)
       }
-      try { c.scrollTop = 0 } catch (e) {}
     }
+  } finally {
+    try { if (safe()) move(original) } finally { scan.busy = false }
   }
+  return [...rows.values()]
+}
+
+// Optional images cannot consume the unread scheduler's entire 4.5s budget.
+async function __chatHubBoundedAvatar(row, budget) {
+  if (!row || budget.attempts++ >= 4) return null
+  const physical = window.__hubAvatarWork || (window.__hubAvatarWork = { pending: 0 })
+  if (physical.pending >= 4) return null
+  physical.pending++
+  const work = Promise.resolve().then(() => __grabAvatar(row)).finally(() => { physical.pending-- })
+  let timer
+  try {
+    return await Promise.race([work,
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), 150) })])
+  } catch { return null } finally { clearTimeout(timer) }
+}
+
+async function __chatHubMaxUnread(favs, allowScroll) {
+  const avatarBudget = { attempts: 0 }
+  // MAX currently exposes only a virtual data-index, not immutable chat ID.
+  // Keep no-href coverage until a verified adapter exists, but do not collapse
+  // duplicate titles before checking ambiguity (see docs/max-telemost-identities.md).
+  const collect = () => {
+    const occurrences = new Map()
+    return Array.from(document.querySelectorAll('aside div.item')).map((r, i) => {
+      const name = (r.querySelector('span.name') || r.querySelector('h3.title'))?.textContent.trim() || 'row:' + i
+      const occurrence = occurrences.get(name) || 0
+      occurrences.set(name, occurrence + 1)
+      return { key: name + ':' + occurrence, el: r.cloneNode(true) }
+    })
+  }
+  const items = (await __chatHubScanRows(collect, '.scrollable.scrollListScrollable', 'max',
+    allowScroll && favs.some(f => f.needAvatar || f.needUnread))).map(r => r.el)
   const out = []
-  const items = Array.from(document.querySelectorAll('aside div.item'))
   const nameOf = item => {
     const el = item.querySelector('span.name') || item.querySelector('h3.title')
     return el ? el.textContent.trim() : ''
+  }
+  // Только контейнер бейджа: числовое превью/название не является счётчиком.
+  // Читаем один раз, даже если внутри indicator несколько вложенных span.
+  const countOf = item => {
+    for (const badge of item.querySelectorAll('.indicator')) {
+      const text = String(badge.textContent || '').trim()
+      if (/^\d+$/.test(text)) return Number(text)
+    }
+    return 0
   }
   for (const f of favs) {
     let unread = false
@@ -2963,17 +3766,17 @@ async function __chatHubMaxUnread(favs, allowScroll) {
     let rank = 9999
     let time = null
     let avatar = null
-    const idx = items.findIndex(item => nameOf(item) === String(f.title).trim())
+    const candidates = items.map((item, index) => ({ item, index })).filter(r => nameOf(r.item) === String(f.title).trim())
+    const duplicatePin = favs.some(other => other.id !== f.id && String(other.title).trim() === String(f.title).trim())
+    const idx = !duplicatePin && candidates.length === 1 ? candidates[0].index : -1
     if (idx >= 0) {
       rank = idx
       // время последнего сообщения («17:30», «пн», «Nov 8»)
       const meta = items[idx].querySelector('.meta')
       if (meta) time = meta.textContent.trim()
-      for (const sp of items[idx].querySelectorAll('span')) {
-        const txt = (sp.textContent || '').trim()
-        if (/^\d+$/.test(txt)) { count = parseInt(txt, 10); unread = true }
-      }
-      if (f.needAvatar) avatar = await __grabAvatar(items[idx])
+      count = countOf(items[idx])
+      unread = count > 0
+      if (f.needAvatar) avatar = await __chatHubBoundedAvatar(items[idx], avatarBudget)
     }
     // текст последнего сообщения — именно span.text.svelte-q2jdqb;
     // числовые бейджи непрочитанных живут в других классах (text--20/indicator)
@@ -2983,20 +3786,13 @@ async function __chatHubMaxUnread(favs, allowScroll) {
     // автор вшит в начало текста. Формируем единое «Автор: текст».
     const authorEl = idx >= 0 ? items[idx].querySelector('span.author') : null
     preview = formatMaxPreview(preview, authorEl ? authorEl.textContent : '')
-    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: preview.slice(0, 110) })
+    out.push({ id: f.id, found: idx >= 0, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: preview.slice(0, 110) })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
   // Маркеров упоминаний список MAX не показывает — только общее число.
-  // Только короткие числа (1-4 цифры): в открытых чатах в спанах всплывают
-  // id-числа (12+ цифр) — это не счётчики, их не суммируем.
   let svcTotal = 0
-  for (const it of items) {
-    for (const sp of it.querySelectorAll('span')) {
-      const txt = (sp.textContent || '').trim()
-      if (/^\d{1,4}$/.test(txt)) svcTotal += parseInt(txt, 10)
-    }
-  }
-  return JSON.stringify({ favs: out, svcTotals: { total: svcTotal, mentions: 0 } })
+  for (const it of items) svcTotal += countOf(it)
+  return JSON.stringify({ favs: out, svcTotals: null, observedTotals: { total: svcTotal, mentions: 0 }, coverage: { complete: false } })
 }
 
 // Яндекс Чат (Телемост): строки списка .yamb-chat-list-item, имя —
@@ -3005,47 +3801,100 @@ async function __chatHubMaxUnread(favs, allowScroll) {
 // туда рендерится бейдж с числом (aria-labelledby строки ссылается на
 // элемент «<id>_unread», в DOM он появляется только с бейджем).
 async function __chatHubYdxUnread(favs, allowScroll) {
-  // Телемост тоже виртуализирует список: проходим его прокруткой, чтобы
-  // нижние чаты получали превью и непрочитанные, как TG/MAX.
-  if (allowScroll && favs.some(f => f.needAvatar || f.needUnread) &&
-      Date.now() - (window.__hubYdxSweepAt || 0) > 15000) {
-    window.__hubYdxSweepAt = Date.now()
-    const scr = () => {
-      const cs = Array.from(document.querySelectorAll('.ui-scroller.ui-virtual-list__scroller'))
-        .filter(c => { const r = c.getBoundingClientRect(); return r.width > 50 && r.height > 50 })
-      return cs[0] || null
-    }
-    const c = scr()
-    if (c) {
-      for (let step = 0; step < 40; step++) {
-        const before = c.scrollTop
-        c.scrollTop = Math.min(c.scrollTop + 700, c.scrollHeight)
-        c.dispatchEvent(new Event('scroll', { bubbles: true }))
-        await new Promise(z => setTimeout(z, 250))
-        if (c.scrollTop === before) break
+  const avatarBudget = { attempts: 0 }
+  // Verified Telemost row contract: the row's React owner passes chatId to
+  // the list-item component and its select handler. DOM aria IDs are hashes,
+  // not chat IDs. Read only that scalar, before cloneNode drops React state.
+  const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+  const validId = new RegExp('^(?:[0-9]+/[0-9]+/' + uuid + '|' + uuid + '_' + uuid + ')$')
+  const own = (o, k) => o && Object.getOwnPropertyDescriptor(o, k)?.value
+  const branchId = (fiber, row) => {
+    if (!fiber || fiber.stateNode !== row) return ''
+    let id = ''
+    for (let n = fiber.return, depth = 0; n && depth < 12; n = n.return, depth++) {
+      if (typeof n.type === 'string') break // never borrow the containing list's state
+      const value = own(n.memoizedProps, 'chatId')
+      if (value !== undefined) {
+        if (typeof value !== 'string' || !validId.test(value) || (id && id !== value)) return ''
+        id = value
       }
-      try { c.scrollTop = 0 } catch (e) {}
     }
+    return id
   }
+  const rowId = row => {
+    const keys = Object.keys(row).filter(k => k.startsWith('__reactFiber$'))
+    if (keys.length !== 1) return ''
+    const fiber = own(row, keys[0]), id = branchId(fiber, row)
+    // React keeps both trees. During a recycled-row identity transition neither
+    // stale nor work-in-progress identity is authoritative: retain old metadata.
+    if (fiber?.alternate && branchId(fiber.alternate, row) !== id) return ''
+    return id
+  }
+  // Verified 3.2.7 sidebar rt -> module 1193 EO: non-draft date is
+  // message.timestamp or conversations[chatId].last_timestamp, in microseconds.
+  const rowTime = (row, chatId) => {
+    if (!chatId) return null
+    const fiber = own(row, Object.keys(row).find(k => k.startsWith('__reactFiber$')))
+    const branch = root => {
+      let date
+      for (let n = root?.return, depth = 0; n && depth < 12; n = n.return, depth++) {
+        if (typeof n.type === 'string') break
+        const props = n.memoizedProps
+        if (own(props, 'chatId') !== chatId || !Object.getOwnPropertyDescriptor(props, 'date')) continue
+        const value = own(props, 'date')
+        if (['date', 'isDraft', 'status'].some(k => {
+          const descriptor = Object.getOwnPropertyDescriptor(props, k)
+          return descriptor && !Object.prototype.hasOwnProperty.call(descriptor, 'value')
+        }) || ![undefined, false].includes(own(props, 'isDraft')) ||
+            ![undefined, 'sent', 'seen'].includes(own(props, 'status')) ||
+            !Number.isSafeInteger(value) || value < 946684800000000 || value > Date.now() * 1000 ||
+            (date !== undefined && date !== value)) return null
+        date = value
+      }
+      return date ?? null
+    }
+    const date = branch(fiber)
+    if (date === null || (fiber.alternate && branch(fiber.alternate) !== date)) return null
+    return { at: Math.floor(date / 1000), dayOnly: false, source: 'telemost-row-date', chatId }
+  }
+  const pinIdentity = url => {
+    try {
+      const u = new URL(url)
+      if (u.origin !== 'https://telemost.yandex.ru' || u.username || u.password) return null
+      const m = u.pathname.match(/^\/(chats|user)\/([^/]+)\/?$/)
+      if (!m) return null
+      const id = decodeURIComponent(m[2])
+      if (m[1] === 'chats') return validId.test(id) ? { kind: 'chats', id } : null
+      return new RegExp('^' + uuid + '$').test(id) ? { kind: 'user', id } : null
+    } catch { return null }
+  }
+  const collect = () => {
+    const occurrences = new Map()
+    return Array.from(document.querySelectorAll('.yamb-chat-list-item')).map((r, i) => {
+      const chatId = rowId(r), base = chatId || 'unknown:' + i
+      const occurrence = occurrences.get(base) || 0
+      occurrences.set(base, occurrence + 1)
+      return { key: base + ':' + occurrence, chatId, messageTime: rowTime(r, chatId), el: r.cloneNode(true) }
+    })
+  }
+  const rows = await __chatHubScanRows(collect, '.ui-scroller.ui-virtual-list__scroller', 'ydx',
+    allowScroll && favs.some(f => f.needAvatar || f.needUnread))
+  const items = rows.map(r => r.el)
   const out = []
-  const items = Array.from(document.querySelectorAll('.yamb-chat-list-item'))
-  const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
   for (const f of favs) {
     let rank = 9999
     let time = null
     let unread = false
     let count = 0
     let avatar = null
-    const ft = norm(f.title)
-    const idx = items.findIndex(it => {
-      const el = it.querySelector('.yamb-chat-list-item__name')
-      const n = norm(el ? el.textContent : '')
-      return n && ft && (n.indexOf(ft) >= 0 || ft.indexOf(n) >= 0)
-    })
+    const identity = pinIdentity(f.url)
+    const candidates = identity ? rows.map((r, i) => ({ ...r, index: i })).filter(r =>
+      identity.kind === 'chats' ? r.chatId === identity.id :
+        r.chatId.includes('_') && r.chatId.split('_').includes(identity.id)) : []
+    const idx = candidates.length === 1 ? candidates[0].index : -1
     if (idx >= 0) {
       rank = idx
-      const tEl = items[idx].querySelector('.ui-entity-block-date')
-      if (tEl) time = tEl.textContent.trim()
+      // Displayed date may be a draft timestamp; never promote it to activity.
       const badges = items[idx].querySelector('.yamb-chat-list-item__badges')
       if (badges) {
         const txt = (badges.textContent || '').trim()
@@ -3055,10 +3904,10 @@ async function __chatHubYdxUnread(favs, allowScroll) {
           else unread = true // нечисловой бейдж (точка/иконка «есть новое»)
         }
       }
-      if (f.needAvatar) avatar = await __grabAvatar(items[idx])
+      if (f.needAvatar) avatar = await __chatHubBoundedAvatar(items[idx], avatarBudget)
     }
     const prevEl2 = idx >= 0 ? (items[idx].querySelector('[id$="_text"]') || items[idx].querySelector('.yamb-chat-list-item__preview, .yamb-chat-list-item__last-message, .ui-entity-block-text')) : null
-    out.push({ id: f.id, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: prevEl2 ? String(prevEl2.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
+    out.push({ id: f.id, found: idx >= 0, unread: unread, count: count, mentions: 0, rank: rank, time: time, messageTime: idx >= 0 && rows[idx].messageTime ? { ...rows[idx].messageTime, canonicalUrl: f.url } : null, avatar: avatar, preview: prevEl2 ? String(prevEl2.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку Телемоста — на вкладку.
   // Маркеров упоминаний список не показывает — только общее число.
@@ -3070,7 +3919,7 @@ async function __chatHubYdxUnread(favs, allowScroll) {
       if (nn > 0) svcTotal += nn
     }
   }
-  return JSON.stringify({ favs: out, svcTotals: { total: svcTotal, mentions: 0 } })
+  return JSON.stringify({ favs: out, svcTotals: null, observedTotals: { total: svcTotal, mentions: 0 }, coverage: { complete: false } })
 }
 
 /* ---------- настройка вида чата справа (CSS + зум) ---------- */
