@@ -53,3 +53,22 @@ test('unapproved direct Telemost top-level window is blocked', () => {
   f.wc.emit('did-start-navigation', {}, 'https://telemost.yandex.ru/', false, true);
   assert.equal(f.destroyed(), 1);
 });
+
+function routingFixture(from = 'https://im.astralinux.ru/astralinux/channels/example') {
+  const app = new EventEmitter(); app.getPath = () => '';
+  let handler, loaded = [], external = [];
+  const contents = { getURL: () => from, setWindowOpenHandler(fn) { handler = fn }, loadURL(url) { loaded.push(url) } };
+  const code = main.slice(main.indexOf('const SERVICE_HOSTS'), main.indexOf('// Запасной барьер'));
+  vm.runInNewContext(code, { app, URL, path: { join: () => '' }, fs: { appendFileSync() {} },
+    shell: { openExternal(url) { external.push(url) } }, setImmediate: fn => fn() });
+  app.emit('web-contents-created', {}, contents);
+  return { handler, loaded, external };
+}
+test('chat links use the external browser while only messenger hosts stay in their webview', () => {
+  const f = routingFixture();
+  assert.equal(f.handler({ url: 'https://jira.astralinux.ru/browse/PROJECT-1' }).action, 'deny');
+  assert.equal(f.handler({ url: 'https://life.astralinux.ru/pages/viewpage.action?pageId=1' }).action, 'deny');
+  assert.deepEqual(f.external, ['https://jira.astralinux.ru/browse/PROJECT-1', 'https://life.astralinux.ru/pages/viewpage.action?pageId=1']);
+  assert.equal(f.handler({ url: 'https://im.astralinux.ru/astralinux/channels/other' }).action, 'deny');
+  assert.deepEqual(f.loaded, ['https://im.astralinux.ru/astralinux/channels/other']);
+});
