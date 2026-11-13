@@ -4,14 +4,20 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import { EventEmitter } from 'node:events';
 const main = fs.readFileSync(new URL('../main.js', import.meta.url), 'utf8');
-function windowFixture() {
-  const app = new EventEmitter(); const wc = new EventEmitter(); let destroyed = 0;
-  wc.getURL = () => '';
+function windowFixture(initialUrl = '') {
+  const app = new EventEmitter(); const wc = new EventEmitter(); let destroyed = 0, currentUrl = initialUrl;
+  const queued = [];
+  wc.getURL = () => currentUrl;
   const win = { webContents: wc, destroy() { destroyed++; } };
   const code = main.slice(main.indexOf("app.on('browser-window-created'"), main.indexOf('if (!app.requestSingleInstanceLock())'));
-  vm.runInNewContext(code, { app, URL, logOpen() {}, AUTH_HOSTS:['passport.yandex.ru'], setImmediate });
+  vm.runInNewContext(code, { app, URL, logOpen() {}, AUTH_HOSTS:['passport.yandex.ru'], setImmediate: fn => queued.push(fn) });
   app.emit('browser-window-created', {}, win);
-  return { wc, destroyed:()=>destroyed };
+  return {
+    wc,
+    destroyed:()=>destroyed,
+    setURL(url) { currentUrl = url },
+    flush() { while (queued.length) queued.shift()() }
+  };
 }
 test('health diagnosis never treats login/loading/chat/error as an empty root', async () => {
   const file = new URL('../service-health.js', import.meta.url);
@@ -51,6 +57,18 @@ test('server redirect auth provenance survives callback and subframes cannot gra
 test('unapproved direct Telemost top-level window is blocked', () => {
   const f = windowFixture();
   f.wc.emit('did-start-navigation', {}, 'https://telemost.yandex.ru/', false, true);
+  assert.equal(f.destroyed(), 1);
+});
+test('late direct Telemost target is blocked after a native window starts blank', () => {
+  const f = windowFixture();
+  f.setURL('https://telemost.yandex.ru/chats/0%2F0%2F00000000-0000-4000-8000-000000000123');
+  f.flush();
+  assert.equal(f.destroyed(), 1);
+});
+test('will-navigate blocks a direct Telemost window before it renders', () => {
+  const f = windowFixture(); let prevented = false;
+  f.wc.emit('will-navigate', { preventDefault() { prevented = true } }, 'https://telemost.yandex.ru/', false, true);
+  assert.equal(prevented, true);
   assert.equal(f.destroyed(), 1);
 });
 
