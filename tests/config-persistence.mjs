@@ -29,7 +29,7 @@ function fixture(t, initial, backup, faults = {}) {
     setBounds() {}
   }
   const electron = {
-    app: { commandLine: { appendSwitch() {} }, getPath: () => dir, on() {}, requestSingleInstanceLock: () => true, whenReady: () => ({ then: fn => ready.push(fn) }) },
+    app: { commandLine: { appendSwitch() {} }, getPath: () => dir, on() {}, requestSingleInstanceLock: () => true, setAppUserModelId() {}, whenReady: () => ({ then: fn => ready.push(fn) }) },
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) }, nativeTheme: {},
     dialog: { showErrorBox: (...args) => notices.push(args) },
     BrowserWindow: FakeWindow,
