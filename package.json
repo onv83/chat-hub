@@ -1,16 +1,17 @@
 {
   "name": "chat-hub",
   "productName": "ChatHub",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Все мессенджеры в одном окне: Mattermost, Telegram, MAX, Телемост + сборная вкладка с закреплёнными чатами",
   "main": "main.js",
   "author": "ChatHub contributors",
   "license": "Apache-2.0",
   "scripts": {
     "start": "electron .",
-    "test": "node --test tests/telegram-aliases.mjs tests/unit.mjs tests/config-persistence.mjs tests/author-freshness.mjs tests/calendar-boundaries.mjs tests/message-order.mjs tests/guest-notification-policy.mjs tests/notification-broker.mjs tests/notification-ledger.mjs tests/telemost-safety.mjs",
+    "test": "node --test tests/telegram-aliases.mjs tests/unit.mjs tests/config-persistence.mjs tests/author-freshness.mjs tests/calendar-boundaries.mjs tests/message-order.mjs tests/guest-notification-policy.mjs tests/notification-broker.mjs tests/notification-ledger.mjs tests/telemost-safety.mjs tests/portable-path.mjs",
     "test:ui": "node --test tests/active-highlight-browser.mjs",
-    "selfcheck": "node tests/selfcheck.mjs"
+    "selfcheck": "node tests/selfcheck.mjs",
+    "package:portable": "node scripts/package-portable.mjs"
   },
   "devDependencies": {
     "electron": "^33.2.0"
