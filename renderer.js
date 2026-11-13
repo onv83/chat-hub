@@ -2821,7 +2821,6 @@ async function mmLastPosts(pinId) {
           if (ch) {
             if (snapshots.has(ch.id)) { res.push({ ...snapshots.get(ch.id), id: j.id }); continue }
             let prev = "", messageId = null;
-            if (!${Boolean(pinId)}) {
             try {
               const purl = "/api/v4/channels/" + ch.id + "/posts?per_page=1";
               const pp = await fetch(purl, { headers: H }).then(r => r.json());
@@ -2842,7 +2841,6 @@ async function mmLastPosts(pinId) {
                 prev = (uname ? uname + ": " : "") + String(post.message).split(String.fromCharCode(13)).join(" ").split(String.fromCharCode(10)).join(" ").split("**").join("").slice(0, 90)
               } }
             } catch (e) {}
-            }
             let unreadCount = null, mentions = null, rootCount = null, rootMentions = null;
             try {
               // ChannelUnread is authoritative; ChannelMember.msg_count is a read cursor.
