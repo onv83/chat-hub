@@ -16,7 +16,7 @@ Electron-обёртка над веб-версиями мессенджеров 
 npm run package:portable
 ```
 
-**Готовую сборку можно скачать:** [ChatHub 0.3.1 для Windows (ZIP)](https://github.com/onv83/chat-hub/releases/download/v0.3.1/ChatHub-0.3.1-win64.zip).
+**Последнюю готовую сборку можно скачать:** [GitHub Releases](https://github.com/onv83/chat-hub/releases/latest).
 
 Готовый архив появляется в `dist/`. Его можно распаковать в любую доступную для
 записи папку и запустить `ChatHub.exe`; настройки и сессии будут лежать в `data`

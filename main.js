@@ -448,7 +448,7 @@ app.on('browser-window-created', (_e, win) => {
   // An auth window owns its callback for its entire lifetime. Subframes
   // cannot classify (or destroy) the containing native window.
   let authFlow = false
-  const inspectMainFrame = (url) => {
+  const inspectMainFrame = (url, event) => {
     try {
       const parsed = new URL(url || '')
       if (parsed.protocol !== 'https:') return
@@ -457,14 +457,23 @@ app.on('browser-window-created', (_e, win) => {
       if (!authFlow && /(^|\.)telemost\.yandex\.ru$/i.test(host)) {
         // Never persist OAuth codes, query strings or chat identifiers.
         logOpen('block-telemost-window ' + parsed.origin)
+        try { if (event && typeof event.preventDefault === 'function') event.preventDefault() } catch (e) {}
         try { win.destroy() } catch (e) {}
       }
     } catch (e) {}
   }
   inspectMainFrame(wc.getURL())
+  // A popup can be created as about:blank and receive its target before the
+  // navigation listeners observe it (for example from a service worker).
+  // Recheck once on the next turn so such a direct Telemost window cannot stay.
+  setImmediate(() => inspectMainFrame(wc.getURL()))
+  const onWillNavigate = (event, url, _inPlace, isMainFrame) => {
+    if (isMainFrame === true) inspectMainFrame(url, event)
+  }
   const onNavigation = (_ev, url, _inPlace, isMainFrame) => {
     if (isMainFrame === true) inspectMainFrame(url)
   }
+  wc.on('will-navigate', onWillNavigate)
   wc.on('did-start-navigation', onNavigation)
   wc.on('did-redirect-navigation', onNavigation)
 })
