@@ -10,6 +10,21 @@ app.commandLine.appendSwitch(
   '<-loopback>;*.astralinux.ru;*.astra-team.ru;localhost;127.0.0.1'
 )
 
+function portableUserDataPath(resourcesPath, execPath, appDir = __dirname, hasMarker = false) {
+  if (!hasMarker || typeof resourcesPath !== 'string' || !resourcesPath || typeof execPath !== 'string' || !execPath) return ''
+  try {
+    if (path.resolve(appDir) !== path.resolve(resourcesPath, 'app')) return ''
+    return path.join(path.dirname(execPath), 'data')
+  } catch (e) { return '' }
+}
+
+const PORTABLE_DATA = portableUserDataPath(
+  process.resourcesPath,
+  process.execPath,
+  __dirname,
+  fs.existsSync(path.join(__dirname, 'portable.json'))
+)
+
 // dev-копия: CHATHUB_DEV_DATA переносит userData (сессии, конфиг) в отдельную
 // папку, чтобы версия для разработки не делила состояние с рабочей
 if (process.env.CHATHUB_DEV_DATA) {
@@ -18,6 +33,8 @@ if (process.env.CHATHUB_DEV_DATA) {
   // ярлыком стабильной версии в панели задач (клик по ярлыку открывал DEV)
   app.setAppUserModelId('ChatHub.Dev')
 } else {
+  // Portable build keeps logins and config inside its unpacked folder.
+  if (PORTABLE_DATA) app.setPath('userData', PORTABLE_DATA)
   // стабильная версия: отдельный AUMID, чтобы панель задач и уведомления
   // не показывали «Electron»
   app.setAppUserModelId('ChatHub')
