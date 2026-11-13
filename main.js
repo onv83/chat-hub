@@ -17,6 +17,10 @@ if (process.env.CHATHUB_DEV_DATA) {
   // отдельный AppUserModelID: иначе Windows склеивает окно dev-копии с
   // ярлыком стабильной версии в панели задач (клик по ярлыку открывал DEV)
   app.setAppUserModelId('ChatHub.Dev')
+} else {
+  // стабильная версия: отдельный AUMID, чтобы панель задач и уведомления
+  // не показывали «Electron»
+  app.setAppUserModelId('ChatHub')
 }
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
