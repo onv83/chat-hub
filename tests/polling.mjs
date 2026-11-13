@@ -414,7 +414,10 @@ test('MM priority executes the real targeted guest, bypasses throttle and reject
   const h = harness(['mm']); h.loadMM()
   h.state.cfg.pinned.push({ id: 'other', serviceId: 'mm', url: 'https://fixture.invalid/channels/other' })
   const old = deferred(), scripts = []
-  const requests = mmFixture(h, url => url.endsWith('/unread') ? { team_id: 'team', channel_id: 'chan', msg_count: 0, mention_count: 0 } : undefined)
+  const requests = mmFixture(h, url => {
+    if (url.endsWith('/posts?per_page=1')) return { order: ['latest'], posts: { latest: { id: 'latest', user_id: 'self', message: 'fresh preview' } } }
+    if (url.endsWith('/unread')) return { team_id: 'team', channel_id: 'chan', msg_count: 0, mention_count: 0 }
+  })
   const execute = h.state.svcViews.mm.executeJavaScript
   h.state.svcViews.mm.executeJavaScript = script => {
     scripts.push(script)
@@ -425,8 +428,9 @@ test('MM priority executes the real targeted guest, bypasses throttle and reject
   h.state.activePinId = 'mm'
   await h.ctx.refreshSelectedUnread('mm')
   assert.equal(scripts.length, 2)
-  assert.equal(requests.some(url => url.endsWith('?per_page=1')), false, 'priority skips preview requests')
+  assert.ok(requests.some(url => url.endsWith('?per_page=1')), 'priority refreshes the selected chat preview')
   assert.ok(!scripts[1].includes('"id":"other"'), 'priority guest gets only selected pin')
+  assert.equal(h.state.lastMsgPreview.mm, 'fresh preview')
   assert.equal(h.state.unreadTotals.mm.c, 0)
   old.resolve('{"res":[{"id":"mm","count":7,"mentions":0}]}'); await full
   assert.equal(h.state.mmPinCounts.mm.count, 0)
