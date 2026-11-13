@@ -98,6 +98,30 @@ function __chatHubGrabAvatar(el) {
       //    достаточно крупный
       const imgs = Array.from(el.querySelectorAll('img'))
       let img = imgs.find(i => /avatar|photo|userpic/i.test(String(i.className))) || imgs.find(i => i.naturalWidth >= 24)
+      const readImageData = async src => {
+        try {
+          const blob = await fetch(src).then(r => r.blob())
+          if (blob && blob.size && blob.size < 300000) {
+            const d = await new Promise(res => {
+              const fr = new FileReader()
+              fr.onload = () => res(fr.result)
+              fr.onerror = () => res(null)
+              fr.readAsDataURL(blob)
+            })
+            if (d) return d
+          }
+        } catch (e) {}
+        return null
+      }
+      // Mattermost keeps sidebar photos loading="lazy" while its service
+      // view is hidden. Waiting for the viewport load event never completes;
+      // same-origin fetch is safe and does not open/read a chat.
+      let lazySameOrigin = false
+      try { lazySameOrigin = !!(img && !img.complete && img.loading === 'lazy' && img.src && new URL(img.src, location.href).origin === location.origin) } catch (e) {}
+      if (lazySameOrigin) {
+        const eager = await readImageData(img.src)
+        if (eager) return eager
+      }
       // webk лениво грузит аватарки: сразу после прокрутки img ещё пуст —
       // ждём загрузку, иначе нижние чаты оставались без фото
       if (img && !img.complete) {
@@ -126,18 +150,8 @@ function __chatHubGrabAvatar(el) {
       }
       if (img.src.startsWith('data:')) return img.src
       // 3) fetch → data-URL (blob: у TG, same-origin, CORS-дружелюбные CDN)
-      try {
-        const blob = await fetch(img.src).then(r => r.blob())
-        if (blob && blob.size && blob.size < 300000) {
-          const d = await new Promise(res => {
-            const fr = new FileReader()
-            fr.onload = () => res(fr.result)
-            fr.onerror = () => res(null)
-            fr.readAsDataURL(blob)
-          })
-          if (d) return d
-        }
-      } catch (e) {}
+      const fetched = await readImageData(img.src)
+      if (fetched) return fetched
       // 4) canvas: рисуем УЖЕ загруженный <img> (blob: у TG — чистый источник)
       try {
         const c = document.createElement('canvas')
@@ -185,6 +199,10 @@ async function init() {
   state.cfg = await window.hub.getConfig()
   state.activePinId = ''
   ensureKeys(state.cfg)
+  // Активность уже восстановлена из cfg.activity; сортируем ДО первой
+  // отрисовки «Сборной», иначе Telegram догоняет порядок только после
+  // первого фонового pollUnread (через несколько секунд после старта).
+  sortFavoritesByActivity()
   buildTabs()
   applyTheme()
   applyLayout()
@@ -532,6 +550,7 @@ function refreshTabIcons() {
 function applyBadgeVisibility() {
   document.body.classList.toggle('hide-badges', state.cfg.badgeVisible === false)
   document.body.classList.toggle('hide-svc-badge', state.cfg.svcBadgeVisible === false)
+  document.body.classList.toggle('hide-chat-source', state.cfg.svcNameVisible === false)
   document.body.classList.toggle('fav-badge-always', state.cfg.favBadgeAlways === true)
 }
 
@@ -854,9 +873,17 @@ async function pinCurrentChat(svc) {
     key
   }
   state.cfg.pinned.push(pin)
+  // Mattermost has an authoritative last_post_at API. Fetch it immediately for
+  // a newly pinned chat so its real activity position is known before the
+  // first background poll; never use Date.now() as a fake message timestamp.
+  if (svc.id === 'mm') {
+    try { await mmLastPosts(pin.id) } catch (e) {}
+  }
+  sortFavoritesByActivity()
   state.cfg.selectedPinId = pin.id
   await window.hub.saveConfig(state.cfg)
   renderChatList()
+  refreshUnreadPresentation()
   updateSvcBar(svc.id)
   toast('В избранном: ' + title)
 }
@@ -2107,7 +2134,7 @@ function unreadViewState(view) {
 function unreadGuestCall(view, key, operation) {
   const entry = unreadViewState(view)
   if (entry.pending.has(key)) return Promise.reject(new Error('Unread guest still busy'))
-  const token = {}
+  const token = { startedAt: Date.now() }
   const epoch = entry.epoch
   entry.pending.set(key, token)
   return Promise.resolve().then(operation).then(value => {
@@ -2116,6 +2143,21 @@ function unreadGuestCall(view, key, operation) {
   }).finally(() => {
     if (entry.pending.get(key) === token) entry.pending.delete(key)
   })
+}
+
+function recoverStaleMmGuest(view, key) {
+  if (!view || typeof view.reload !== 'function') return false
+  const entry = state.unreadViews && state.unreadViews.get(view)
+  const pending = entry && entry.pending.get(key)
+  const startedAt = Number(pending && pending.startedAt)
+  if (!Number.isFinite(startedAt) || Date.now() - startedAt < 60000) return false
+  // Reload only the hidden service view: a visible Mattermost tab may contain
+  // an unsent user draft. The selected pin-view is never touched.
+  const pane = document.querySelector('section[data-tab="svc:mm"]')
+  if (pane && pane.classList.contains('visible')) return false
+  if (state.mmGuestRecoveryAt && Date.now() - state.mmGuestRecoveryAt < 60000) return false
+  state.mmGuestRecoveryAt = Date.now()
+  try { view.reload(); return true } catch (e) { return false }
 }
 
 async function pollUnread() {
@@ -2673,6 +2715,8 @@ function fmtRowTime(ms) {
 // все команды) и упоминаний пользователя (mention_count: личные + @-упоминания).
 // Троттлинг 30 с; сбой молчит (бейдж остаётся прежним).
 async function mmTabCounts() {
+  const recoveryView = state.svcViews.mm || svcViewFor('mm')
+  if (recoverStaleMmGuest(recoveryView, 'mm:totals')) return
   return runUnreadJob('mm:totals', 'mm', async job => {
   const now = Date.now()
   if (state.mmTabCountsAt && now - state.mmTabCountsAt < 30000) return
@@ -2713,6 +2757,8 @@ async function mmTabCounts() {
 
 async function mmLastPosts(pinId) {
   const taskKey = pinId ? 'mm:read' : 'mm:posts'
+  const recoveryView = state.svcViews.mm || svcViewFor('mm')
+  if (recoverStaleMmGuest(recoveryView, taskKey)) return
   return runUnreadJob(taskKey, 'mm', async job => {
   const now = Date.now()
   if (!pinId && state.mmChannelsAt && now - state.mmChannelsAt < 30000) return
@@ -2843,7 +2889,9 @@ async function mmLastPosts(pinId) {
       }
     }
   } catch (e) {}
-  }, pinId ? 4500 : 15000)
+  // Full MM metadata walks all pinned routes and may include slow server-side
+  // user/post lookups. Give the normal batch 45 s; targeted reads stay 4.5 s.
+  }, pinId ? 4500 : 45000)
 }
 
 // Сортировка избранного сборной вкладки. Главное — время последнего сообщения
@@ -3721,12 +3769,17 @@ async function __chatHubBoundedAvatar(row, budget) {
   if (!row || budget.attempts++ >= 4) return null
   const physical = window.__hubAvatarWork || (window.__hubAvatarWork = { pending: 0 })
   if (physical.pending >= 4) return null
+  let lazySameOrigin = false
+  try {
+    const img = row.querySelector && row.querySelector('img[loading="lazy"][src]')
+    lazySameOrigin = !!(img && img.src && new URL(img.src, location.href).origin === location.origin)
+  } catch (e) {}
   physical.pending++
   const work = Promise.resolve().then(() => __grabAvatar(row)).finally(() => { physical.pending-- })
   let timer
   try {
     return await Promise.race([work,
-      new Promise(resolve => { timer = setTimeout(() => resolve(null), 150) })])
+      new Promise(resolve => { timer = setTimeout(() => resolve(null), lazySameOrigin ? 700 : 150) })])
   } catch { return null } finally { clearTimeout(timer) }
 }
 
@@ -4011,6 +4064,9 @@ function buildSettings(sec) {
       <div class="form-row">
         <label><input type="checkbox" id="svcbadge-visible"> Показывать значок мессенджера у чатов в избранном</label>
       </div>
+      <div class="form-row">
+        <label><input type="checkbox" id="svcname-visible"> Показывать название мессенджера у чатов в избранном</label>
+      </div>
 
       <h3>Тема</h3>
       <div class="form-row">
@@ -4124,6 +4180,15 @@ function buildSettings(sec) {
       svcCb.checked = state.cfg.svcBadgeVisible !== false
       svcCb.onchange = () => {
         state.cfg.svcBadgeVisible = svcCb.checked
+        applyBadgeVisibility()
+        window.hub.saveConfig(state.cfg).catch(() => {})
+      }
+    }
+    const svcNameCb = document.getElementById('svcname-visible')
+    if (svcNameCb) {
+      svcNameCb.checked = state.cfg.svcNameVisible !== false
+      svcNameCb.onchange = () => {
+        state.cfg.svcNameVisible = svcNameCb.checked
         applyBadgeVisibility()
         window.hub.saveConfig(state.cfg).catch(() => {})
       }

@@ -129,7 +129,7 @@ function startupSandbox(interactive = false) {
     'renderChatList', 'syncChatSelection', 'enqueueLoad', 'pumpPreload', 'openInServiceTab'], {
     state, document,
     window: { hub: { getConfig: async () => ({ services, pinned, selectedPinId: pinned[0].id }), saveConfig: async () => {} } },
-    ensureKeys: noop, buildTabs: noop, applyTheme: noop, applyLayout: noop,
+    ensureKeys: noop, sortFavoritesByActivity: noop, buildTabs: noop, applyTheme: noop, applyLayout: noop,
     applyBadgeVisibility: noop, refreshTabIcons: noop, initListSplitter: noop,
     badgeColor: () => '#000', captureSvcIcon: noop, updateSvcBar: noop,
     makeChatRow: () => new Element('div'), applyFavFilter: noop, trimPinViews: noop,
@@ -853,4 +853,41 @@ test('parseChatTime: «10 мая» — май, без сдвига месяце�
   const d = new Date(r.at)
   assert.equal(d.getMonth(), 4)
   assert.equal(d.getDate(), 10)
+})
+
+test('new MM favourite sorts by authoritative last post without restart', async () => {
+  const older = { id: 'older', serviceId: 'mm', title: 'Older', url: 'https://fixture.invalid/team/messages/@older' }
+  const state = { cfg: { services: [{ id: 'mm', url: 'https://fixture.invalid' }], pinned: [older] },
+    svcViews: {}, pinViews: {}, rankAct: {}, lastMsgAt: { older: 100 }, lastUsed: {} }
+  const calls = [], rendered = []
+  const view = { getURL: () => 'https://fixture.invalid/team/messages/@new', executeJavaScript: async () => 'https://fixture.invalid/team/messages/@new' }
+  state.svcViews.mm = view
+  const ctx = sandbox(['pinKeyOf', 'sortFavoritesByActivity', 'pinCurrentChat'], {
+    state, Date, document: { querySelector: () => null },
+    window: { hub: { saveConfig: async () => {} } },
+    getChatNameFor: async () => 'New', updateSvcBar() {}, toast() {},
+    renderChatList: () => rendered.push(true),
+    mmLastPosts: async id => { calls.push(id); state.lastMsgAt[id] = 200 },
+    refreshUnreadPresentation() {}
+  })
+  await ctx.pinCurrentChat({ id: 'mm', url: 'https://fixture.invalid' })
+  assert.equal(calls.length, 1)
+  assert.equal(state.cfg.pinned[0].title, 'New')
+  assert.equal(state.cfg.pinned[0].serviceId, 'mm')
+  assert.ok(rendered.length)
+})
+
+test('source label visibility is configurable independently of service icons', () => {
+  const toggles = {}
+  const state = { cfg: { badgeVisible: true, svcBadgeVisible: true, favBadgeAlways: false, svcNameVisible: false } }
+  const ctx = sandbox(['applyBadgeVisibility'], {
+    state,
+    document: { body: { classList: { toggle(name, value) { toggles[name] = value } } } }
+  })
+  ctx.applyBadgeVisibility()
+  assert.equal(toggles['hide-chat-source'], true)
+  assert.equal(toggles['hide-svc-badge'], false)
+  state.cfg.svcNameVisible = true
+  ctx.applyBadgeVisibility()
+  assert.equal(toggles['hide-chat-source'], false)
 })

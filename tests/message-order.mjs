@@ -67,3 +67,24 @@ for(const service of ['mm','tg','max','ydx'])test(service+': date-only yesterday
  assert.equal(h.state.lastMsgAt.older,at(11,15));
  assert.deepEqual(h.state.cfg.pinned.map(p=>p.id),['newer','older']);
 });
+
+test('startup sorts restored Telegram activity before the first background poll',async()=>{
+ const cfg={services:[],pinned:[
+   {id:'older',serviceId:'tg',url:'https://fixture.invalid/#1'},
+   {id:'newer',serviceId:'tg',url:'https://fixture.invalid/#2'}
+ ],activity:{lastMsgAt:{older:at(11,15),newer:at(12,8,45)}},actReset1:true,actReset2:true,actReset3:true,actReset4:true,actReset5:true};
+ const state={cfg:null,activePinId:'',activityRestored:false,svcViews:{},pinViews:{},rankAct:{},pinAvatars:{},
+   lastMsgAt:{},lastMsgDayOnly:{},lastMsgSource:{},lastMsgText:{},lastMsgPreview:{},msgAuth:{},liveAct:{},tgPeerOf:{},prevUnread:{},
+   unreadBaseC:{},unreadBaseM:{},unreadTotals:{},unreadTotalsAt:{},unreadDots:{},svcTabTotals:{}};
+ let rendered=0;
+ const ctx=vm.createContext({state,Date,console:{log(){}},tgScrollDone:false,
+   window:{hub:{getConfig:async()=>cfg,saveConfig:async()=>{}}},
+   document:{querySelector(){return null},getElementById(){return null},addEventListener(){}},
+   setInterval(){return 0},setTimeout(){return 0},clearTimeout(){},
+   buildTabs(){},applyTheme(){},applyLayout(){},applyBadgeVisibility(){},refreshTabIcons(){},activateTab(){},initListSplitter(){},
+   renderChatList(){rendered++}});
+ for(const n of ['restorePreviewAuthor','ensureKeys','sortFavoritesByActivity','init'])vm.runInContext(fn(n),ctx);
+ await ctx.init();
+ assert.deepEqual(state.cfg.pinned.map(p=>p.id),['newer','older']);
+ assert.equal(rendered,1);
+});

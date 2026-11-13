@@ -17,12 +17,17 @@ if (process.env.CHATHUB_DEV_DATA) {
   // отдельный AppUserModelID: иначе Windows склеивает окно dev-копии с
   // ярлыком стабильной версии в панели задач (клик по ярлыку открывал DEV)
   app.setAppUserModelId('ChatHub.Dev')
+} else {
+  // стабильная версия: отдельный AUMID, чтобы панель задач и уведомления
+  // не показывали «Electron»
+  app.setAppUserModelId('ChatHub')
 }
 const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 
 const DEFAULT_CONFIG = {
   cssDefaultsVersion: 6,
   tabIcons: false,
+  svcNameVisible: true,
   services: [
     { id: 'mm',  name: 'Mattermost',             url: 'https://im.astralinux.ru',    partition: 'persist:mm' },
     { id: 'tg',  name: 'Telegram',               url: 'https://web.telegram.org/k/', partition: 'persist:tg', proxy: 'http://127.0.0.1:18888' },
@@ -376,7 +381,10 @@ function createWindow() {
 // Electron (Яндекс Телемост так открывает чаты и звонки — получалось второе окно).
 // Политика: ссылки наших сервисов — в том же webview; логин-страницы OAuth —
 // всплывающим окном (флоу требует дочернее окно); прочее — системный браузер.
-const SERVICE_HOSTS = ['astralinux.ru', 'web.telegram.org', 'web.max.ru', 'telemost.yandex.ru']
+// Only the actual messenger origins stay in their webview. Links from chat
+// messages to Jira/LIFE/Bitbucket and other corporate sites use the external
+// browser instead of reusing the messenger's Electron guest.
+const SERVICE_HOSTS = ['im.astralinux.ru', 'web.telegram.org', 'web.max.ru', 'telemost.yandex.ru']
 const AUTH_HOSTS = ['passport.yandex.ru', 'passport.yandex.com', 'accounts.google.com', 'login.microsoftonline.com', 'oauth.telegram.org', 'connect.login.ru', 'login.max.ru']
 // журнал решений по window.open — чтобы понять, откуда берутся лишние окна
 // (жалоба: «Яндекс Телемост опять открылся отдельным окном»)

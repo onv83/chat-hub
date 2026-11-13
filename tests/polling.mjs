@@ -13,12 +13,12 @@ const flush = async () => { for (let i = 0; i < 35; i++) await Promise.resolve()
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b }); return { promise, resolve, reject } }
 function harness(ids = ['mm', 'max']) {
   let now = 100000, sequence = 0
-  const timers = new Map(), badges = [], calls = {}, replies = {}
+  const timers = new Map(), badges = [], calls = {}, replies = {}, reloads = {}
   const state = { cfg: { services: ids.map(id => ({ id })), pinned: ids.map(id => ({ id, serviceId: id, url: 'https://fixture.invalid/channels/room' })) }, svcViews: {}, pinViews: {} }
   for (const key of ['pinAvatars','unreadTotals','unreadTotalsAt','unreadBaseC','unreadBaseM','prevUnread','rankAct','lastMsgAt','lastMsgText','lastMsgPreview','liveAct','tgPeerOf']) state[key] = {}
   const view = id => {
     const events = new Map()
-    return { isConnected: true, addEventListener(n, fn) { events.set(n, fn) }, emit(n) { events.get(n)?.() }, executeJavaScript(js) {
+    return { isConnected: true, addEventListener(n, fn) { events.set(n, fn) }, emit(n) { events.get(n)?.() }, reload() { reloads[id] = (reloads[id] || 0) + 1; events.get('did-start-loading')?.() }, executeJavaScript(js) {
       new vm.Script(js) // always compile the real serialized production script
       calls[id] = (calls[id] || 0) + 1
       return replies[id]()
@@ -32,11 +32,11 @@ function harness(ids = ['mm', 'max']) {
     sortFavoritesByActivity() {}, scheduleActSave() {}, mmTabCounts: async () => {}, mmLastPosts: async () => {},
     __chatHubGrabAvatar: function () {}, formatMaxPreview: function () {}, tgSearchResolve: async () => null,
     UNREAD_EXTRACTORS: Object.fromEntries(ids.map(id => [id, function () {}])) })
-  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
+  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','recoverStaleMmGuest','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
     if (name.startsWith('mm')) continue
     vm.runInContext(extract(name), ctx)
   }
-  return { ctx, state, calls, replies, badges, timers, view, loadMM() { for (const n of ['mmTabCounts','mmLastPosts']) vm.runInContext(extract(n), ctx) }, async tick(ms) {
+  return { ctx, state, calls, replies, reloads, badges, timers, view, loadMM() { for (const n of ['mmTabCounts','mmLastPosts']) vm.runInContext(extract(n), ctx) }, async tick(ms) {
     now += ms
     for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn() }
     await flush()
@@ -355,6 +355,39 @@ test('active-chat fast probe does not starve normal metadata collection', async 
   assert.equal(h.state.lastMsgPreview.max, 'metadata')
 })
 
+test('MM hidden stale physical guest reloads once and next poll publishes current unread', async () => {
+  const h = harness(['mm']); h.loadMM()
+  const stuck = deferred()
+  h.replies.mm = () => stuck.promise
+  const first = h.ctx.mmLastPosts()
+  await flush()
+  assert.equal(h.calls.mm, 1)
+  await h.tick(46000)
+  await first
+  await h.tick(61000)
+  h.replies.mm = () => Promise.resolve(JSON.stringify({ res: [{ id: 'mm', accountId: 'self', channelId: 'chan', at: 200000, count: 3, mentions: 3, rootCount: 3, rootMentions: 3 }] }))
+  await h.ctx.mmLastPosts()
+  assert.equal(h.reloads.mm, 1, 'only hidden service view is reloaded to retire its stuck physical guest')
+  await h.ctx.mmLastPosts()
+  assert.equal(h.calls.mm, 2)
+  assert.equal(h.state.mmPinCounts.mm.count, 3)
+  assert.equal(h.state.mmPinCounts.mm.mentions, 3)
+})
+
+test('MM normal metadata batch may exceed 15 seconds and still publish', async () => {
+  const h = harness(['mm']); h.loadMM()
+  const slow = deferred()
+  h.replies.mm = () => slow.promise
+  const task = h.ctx.mmLastPosts()
+  await flush()
+  await h.tick(16000)
+  slow.resolve(JSON.stringify({ res: [{ id: 'mm', accountId: 'self', channelId: 'chan', at: 200000, count: 3, mentions: 0, rootCount: 3, rootMentions: 0 }] }))
+  await task
+  await flush()
+  assert.equal(h.state.mmPinCounts.mm.count, 3)
+  assert.equal(h.state.lastMsgAt.mm, 200000)
+})
+
 for (const task of ['mmTabCounts', 'mmLastPosts']) {
   test(`${task}: single-flight, deadline and late-reply rejection`, async () => {
     const h = harness(['mm']); h.loadMM()
@@ -363,7 +396,7 @@ for (const task of ['mmTabCounts', 'mmLastPosts']) {
     const a = h.ctx[task](), b = h.ctx[task]()
     await flush()
     assert.equal(h.calls.mm, 1)
-    await h.tick(16000)
+    await h.tick(task === 'mmLastPosts' ? 46000 : 16000)
     await Promise.all([a,b])
     await h.ctx[task]()
     assert.equal(h.calls.mm, 1, 'no repeated execution on stuck guest')

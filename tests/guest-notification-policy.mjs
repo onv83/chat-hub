@@ -36,7 +36,7 @@ function fixture(t, initial) {
   const electron = {
     app: { commandLine: { appendSwitch() {} }, getPath: () => dir,
       on(n, fn) { events.set(n, [...(events.get(n) || []), fn]) },
-      requestSingleInstanceLock: () => true, whenReady: () => ({ then(fn) { ready = fn } }) },
+      requestSingleInstanceLock: () => true, setAppUserModelId() {}, whenReady: () => ({ then(fn) { ready = fn } }) },
     ipcMain: { handle: (n, fn) => handlers.set(n, fn) }, nativeTheme: {},
     dialog: { showErrorBox() {} }, BrowserWindow: FakeWindow, Menu: { setApplicationMenu() {} },
     session: { defaultSession, fromPartition }

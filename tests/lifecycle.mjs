@@ -78,6 +78,33 @@ for (const outcome of ['load', 'error', 'timeout']) test('lifecycle: fallback Im
   late() // already queued callback cannot restart work or retain resources
   assert.equal(time.timers.size, 0)
 })
+test('lifecycle: lazy same-origin avatar fetches without waiting for viewport load', async () => {
+  let next = 0, scheduled = 0
+  const timers = new Map()
+  const setTimeout = fn => { const id = ++next; scheduled++; timers.set(id, fn); queueMicrotask(() => { if (timers.has(id)) { timers.delete(id); fn() } }); return id }
+  const clearTimeout = id => timers.delete(id)
+  const img = Object.assign(new EventNode(), { complete: false, naturalWidth: 0, loading: 'lazy', src: 'https://fixture.invalid/avatar', className: 'avatar' })
+  class Reader { readAsDataURL() { this.result = 'data:image/png;base64,eager'; queueMicrotask(() => this.onload && this.onload()) } }
+  let fetches = 0
+  const ctx = context(['__chatHubGrabAvatar'], { setTimeout, clearTimeout, URL, location: { origin: 'https://fixture.invalid', href: 'https://fixture.invalid/chat' },
+    fetch: async () => { fetches++; return { blob: async () => ({ size: 1 }) } }, FileReader: Reader })
+  const result = await ctx.__chatHubGrabAvatar({ querySelector: () => null, querySelectorAll: () => [img] })
+  assert.equal(result, 'data:image/png;base64,eager')
+  assert.equal(fetches, 1)
+  assert.equal(scheduled, 0, 'same-origin lazy image must not wait for viewport-driven load')
+  assert.equal(img.listenerCount(), 0)
+})
+test('lifecycle: bounded same-origin lazy avatar gets fetch budget', async () => {
+  let delay = 0, resolveWork
+  const img = { loading: 'lazy', src: 'https://fixture.invalid/avatar' }
+  const ctx = context(['__chatHubBoundedAvatar'], { window: {}, URL, location: { origin: 'https://fixture.invalid', href: 'https://fixture.invalid/chat' },
+    setTimeout: (_fn, ms) => { delay = ms; return 1 }, clearTimeout() {}, __grabAvatar: () => new Promise(resolve => { resolveWork = resolve }) })
+  const task = ctx.__chatHubBoundedAvatar({ querySelector: () => img }, { attempts: 0 })
+  await Promise.resolve()
+  assert.equal(delay, 700)
+  resolveWork('data:image/png;base64,eager')
+  assert.equal(await task, 'data:image/png;base64,eager')
+})
 function cssContext() {
   const time = clock()
   let applies = 0
