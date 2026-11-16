@@ -16,7 +16,7 @@ function harness(service){
  let observations=pins.map(p=>({id:p.id,found:true,time:'вчера',count:0,mentions:0}));
  state.svcViews[service]={isConnected:true,addEventListener(){},executeJavaScript:async source=>{new vm.Script(source);return JSON.stringify({favs:observations,svcTotals:{total:0,mentions:0}})}};
  const ctx=vm.createContext({state,Date:Clock,console,setTimeout,clearTimeout,document:{querySelector(){return null}},favoritesOf:()=>state.cfg.pinned,svcViewFor:()=>state.svcViews[service],updateBadge(){},updateBadge2(){},renderChatList(){},scheduleActSave(){},mmTabCounts:async()=>{},mmLastPosts:async()=>{},tgSearchResolve:async()=>null,__chatHubGrabAvatar:function(){},formatMaxPreview:function(){},UNREAD_EXTRACTORS:{[service]:function(){}}});
- for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','parseChatTime','fmtChatWhen','sortFavoritesByActivity','mergeLastMessageTime','activitySnapshot','ensureKeys','restorePreviewAuthor'])vm.runInContext(fn(n),ctx);
+ for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','parseChatTime','fmtChatWhen','sortFavoritesByActivity','mergeLastMessageTime','activitySnapshot','ensureKeys','restorePreviewAuthor'])vm.runInContext(fn(n),ctx);
  return {ctx,state,set(rows){observations=rows}};
 }
 for(const service of ['mm','tg','max','ydx'])test(service+': midnight order and verified provenance survive restart and missing/day-only refresh',async()=>{
@@ -87,4 +87,30 @@ test('startup sorts restored Telegram activity before the first background poll'
  await ctx.init();
  assert.deepEqual(state.cfg.pinned.map(p=>p.id),['newer','older']);
  assert.equal(rendered,1);
-});
+ });
+ test('future cached activity cannot outrank a confirmed message from today',()=>{
+ const clock=at(16,16,42);
+ class Clock extends Date{constructor(...args){super(...(args.length?args:[clock]))}static now(){return clock}}
+ const state={cfg:{pinned:[{id:'future'},{id:'today'}]},lastMsgAt:{future:at(16,18,6),today:at(16,16,33)},rankAct:{}};
+ const ctx=vm.createContext({state,Date:Clock,renderChatList(){}});
+ vm.runInContext(fn('sortFavoritesByActivity'),ctx);
+ ctx.sortFavoritesByActivity();
+ assert.deepEqual(state.cfg.pinned.map(p=>p.id),['today','future']);
+ });
+ test('Telegram compact time from a pin view is not accepted as sort activity',()=>{
+ const ctx=vm.createContext({});
+ vm.runInContext(fn('shouldMergeDomTime'),ctx);
+ assert.equal(ctx.shouldMergeDomTime('tg',{found:true,time:'18:06',timeView:'pin-view'}),false);
+ assert.equal(ctx.shouldMergeDomTime('tg',{found:true,time:'18:06',timeView:'service-list'}),true);
+ });
+ test('startup clears an impossible saved future activity timestamp',()=>{
+ const clock=at(16,16,42);
+ class Clock extends Date{constructor(...args){super(...(args.length?args:[clock]))}static now(){return clock}}
+ const cfg={services:[],pinned:[{id:'future',serviceId:'tg'}],activity:{lastMsgAt:{future:at(16,18,6)},lastMsgText:{future:'16.11 18:06'},lastMsgDayOnly:{future:false}},actReset1:true,actReset2:true,actReset3:true,actReset4:true,actReset5:true};
+ const state={cfg:cfg,activityRestored:false,svcViews:{},pinViews:{},rankAct:{},pinAvatars:{},lastMsgAt:{},lastMsgDayOnly:{},lastMsgSource:{},lastMsgText:{},lastMsgPreview:{},msgAuth:{},liveAct:{},tgPeerOf:{},prevUnread:{},unreadBaseC:{},unreadBaseM:{},unreadTotals:{},unreadTotalsAt:{},unreadDots:{},svcTabTotals:{}};
+ const ctx=vm.createContext({state,Date:Clock,console:{log(){}},tgScrollDone:false,window:{hub:{saveConfig:async()=>{}}}});
+ for(const n of ['restorePreviewAuthor','ensureKeys'])vm.runInContext(fn(n),ctx);
+ ctx.ensureKeys(cfg);
+ assert.equal(state.lastMsgAt.future,undefined);
+ assert.equal(state.lastMsgText.future,undefined);
+ });

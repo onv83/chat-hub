@@ -203,7 +203,7 @@ function dialogHost(h) {
     window: { hub: { isWinFocused: async () => true } }, favoritesOf: () => pins, svcViewFor: () => state.svcViews.tg,
     updateBadge2() {}, updateBadge() {}, sortFavoritesByActivity() {}, scheduleActSave() {}, tgSearchResolve: async () => null,
     __chatHubGrabAvatar: async function() { return null } })
-  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubTgUnread','applyTgIdentityObservation']) load(ctx, name)
+  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubTgUnread','applyTgIdentityObservation']) load(ctx, name)
   ctx.UNREAD_EXTRACTORS = { tg: ctx.__chatHubTgUnread }
   return { ctx, state, guestResults }
 }
@@ -801,7 +801,7 @@ test('TG bounded offscreen photos pass through the actual serialized scheduler w
     window: { hub: { isWinFocused: async () => true } }, favoritesOf: () => pins, svcViewFor: () => state.svcViews.tg,
     updateBadge2() {}, updateBadge() {}, sortFavoritesByActivity() {}, scheduleActSave() {}, tgSearchResolve: async () => null,
     __chatHubGrabAvatar: async function() { return null } })
-  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubTgUnread','applyTgIdentityObservation']) load(ctx, name)
+  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubTgUnread','applyTgIdentityObservation']) load(ctx, name)
   ctx.UNREAD_EXTRACTORS = { tg: ctx.__chatHubTgUnread }
   await ctx.pollUnread(); await h.flush(); await ctx.pollUnread()
   assert.equal(state.pinAvatars.p, 'data:image/jpeg;base64,AQID')
@@ -965,7 +965,7 @@ test('TG actual serialized guest and scheduler publish verified aliases and repl
     window: { hub: { isWinFocused: async () => true } }, favoritesOf: () => pins, svcViewFor: () => state.svcViews.tg,
     updateBadge2() {}, updateBadge() {}, sortFavoritesByActivity() {}, scheduleActSave() {}, tgSearchResolve: async () => null,
     __chatHubGrabAvatar: async function(row) { return 'avatar:' + row.getAttribute('data-peer-id') } })
-  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubTgUnread','applyTgIdentityObservation']) load(ctx, name)
+  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubTgUnread','applyTgIdentityObservation']) load(ctx, name)
   ctx.UNREAD_EXTRACTORS = { tg: ctx.__chatHubTgUnread }
   await ctx.pollUnread()
   assert.equal(executions, 1)
