@@ -44,6 +44,7 @@ const CONFIG_PATH = path.join(app.getPath('userData'), 'config.json')
 const DEFAULT_CONFIG = {
   cssDefaultsVersion: 6,
   tabIcons: false,
+  pinBackgroundActive: false,
   svcNameVisible: true,
   services: [
     { id: 'mm',  name: 'Mattermost',             url: 'https://im.astralinux.ru',    partition: 'persist:mm' },

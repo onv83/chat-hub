@@ -138,7 +138,7 @@ test('mm: hung optional avatars cannot starve API unread publication or retain e
   const state = { cfg: { services: [{ id: 'mm' }], pinned: favs }, svcViews: {}, pinViews: {},
     mmPinCounts: Object.fromEntries(favs.map(p => [p.id, { count: 2, mentions: 1, observedAt: 1000 }])) }
   for (const key of ['pinAvatars','unreadTotals','unreadTotalsAt','unreadBaseC','unreadBaseM','prevUnread','rankAct','lastMsgAt','lastMsgText','lastMsgPreview','liveAct','tgPeerOf']) state[key] = {}
-  const li = { classList: { contains: () => false }, querySelector: () => null }
+  const li = { classList: { contains: () => false }, querySelector: selector => selector === 'img[src]' ? { src: 'https://fixture.invalid/avatar', loading: 'lazy' } : null }
   const root = { querySelectorAll: () => [], querySelector: () => ({ closest: () => li }) }
   const guest = vm.createContext({ window: { avatarCalls: 0 }, document: { querySelector: () => root }, setTimeout, clearTimeout })
   let executions = 0
@@ -148,7 +148,7 @@ test('mm: hung optional avatars cannot starve API unread publication or retain e
     updateBadge2() {}, updateBadge() {}, sortFavoritesByActivity() {}, scheduleActSave() {},
     mmTabCounts: async () => {}, mmLastPosts: async () => {},
     __chatHubGrabAvatar: async function () { window.avatarCalls++; return new Promise(() => {}) } })
-  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMmUnread']) load(ctx, name)
+  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMmUnread']) load(ctx, name)
   ctx.UNREAD_EXTRACTORS = { mm: ctx.__chatHubMmUnread }
   const start = performance.now()
   await ctx.pollUnread()
@@ -163,6 +163,31 @@ test('mm: hung optional avatars cannot starve API unread publication or retain e
   assert.equal(state.unreadViews.get(state.svcViews.mm).pending.size, 0)
 })
 
+test('mm: avatar budget skips no-photo rows and rotates to later eligible profiles', async () => {
+  const favs = Array.from({ length: 7 }, (_, i) => ({ id: 'p' + i, serviceId: 'mm', url: 'https://fixture.invalid/team/messages/room' + i, needAvatar: true }))
+  const state = { cfg: { services: [{ id: 'mm' }], pinned: favs }, svcViews: {}, pinViews: {} }
+  const rows = new Map()
+  for (let i = 0; i < 7; i++) {
+    const image = i === 0 ? null : { src: 'https://fixture.invalid/avatar' + i, loading: 'lazy' }
+    rows.set('room' + i, { id: 'p' + i, classList: { contains: () => false }, querySelector: selector => selector === 'img[src]' ? image : null })
+  }
+  const root = {
+    querySelectorAll: () => [],
+    querySelector(selector) {
+      const m = String(selector).match(/\/messages\/(room\d+)/)
+      const row = m && rows.get(m[1])
+      return row ? { closest: () => row } : null
+    }
+  }
+  const guest = vm.createContext({ window: {}, document: { querySelector: () => root }, URL, location: { href: 'https://fixture.invalid/' }, setTimeout, clearTimeout,
+    __grabAvatar: async row => 'avatar:' + row.id })
+  for (const name of ['__chatHubBoundedAvatar','__chatHubMmUnread']) load(guest, name)
+  const first = JSON.parse(await guest.__chatHubMmUnread(favs))
+  assert.deepEqual(first.favs.filter(r => r.avatar).map(r => r.id), ['p1','p2','p3','p4'])
+  const second = JSON.parse(await guest.__chatHubMmUnread(favs))
+  assert.deepEqual(second.favs.filter(r => r.avatar).map(r => r.id), ['p1','p2','p5','p6'])
+})
+
 // Actual host scheduler and actual serialized extractor under wall-clock timers.
 for (const service of ['tg', 'max', 'ydx']) test(`${service}: real 4.5s scheduler publishes a slow virtual chunk before expiration`, async t => {
   const h = fixture(service, { windows: 45, realTime: true, hungAvatar: true })
@@ -175,7 +200,7 @@ for (const service of ['tg', 'max', 'ydx']) test(`${service}: real 4.5s schedule
     favoritesOf: () => state.cfg.pinned, svcViewFor: () => state.svcViews[service],
     updateBadge2() {}, updateBadge() {}, sortFavoritesByActivity() {}, scheduleActSave() {},
     tgSearchResolve: async () => null, __chatHubGrabAvatar: async function () { return new Promise(() => {}) } })
-  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMaxUnread','__chatHubYdxUnread','__chatHubTgUnread']) load(ctx, name)
+  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMaxUnread','__chatHubYdxUnread','__chatHubTgUnread']) load(ctx, name)
   ctx.UNREAD_EXTRACTORS = { [service]: ctx[service === 'tg' ? '__chatHubTgUnread' : service === 'max' ? '__chatHubMaxUnread' : '__chatHubYdxUnread'] }
   const start = performance.now()
   await ctx.pollUnread()

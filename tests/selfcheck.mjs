@@ -361,7 +361,7 @@ async function checkRows(sh) {
       const prev = prevEl ? prevEl.innerHTML : ''
       const av = row.querySelector('.row-avatar')
       const ab = av ? av.getBoundingClientRect() : { width: 0 }
-      const hm = time.split(':'); const dm = time.split('.'); const isDig = (str) => str.length > 0 && Array.from(str).every(ch => ch >= '0' && ch <= '9'); const timeOk = time === 'вчера' || (hm.length === 2 && isDig(hm[0]) && hm[0].length <= 2 && isDig(hm[1]) && hm[1].length === 2) || (dm.length >= 2 && dm.length <= 3 && dm.every(isDig))
+      const hm = time.split(':'); const dm = time.split('.'); const isDig = (str) => str.length > 0 && Array.from(str).every(ch => ch >= '0' && ch <= '9'); const clock = /^\d{1,2}:\d{2}$/.test(time); const date = /^\d{2}\.\d{2}(?:\.\d{2})?$/.test(time); const timeOk = time === 'сегодня' || time === 'вчера' || clock || date || /^\d{1,2}:\d{2} вчера$/.test(time) || /^\d{1,2}:\d{2} \d{2}\.\d{2}(?:\.\d{2})?$/.test(time)
       if (!title) out.bad.push('нет названия')
       if (!timeOk && time !== '') out.bad.push('время: ' + time)
       if (!src) out.bad.push('нет источника')
