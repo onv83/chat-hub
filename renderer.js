@@ -438,6 +438,31 @@ function ensureKeys(cfg) {
     if (state.cfg.activity) state.cfg.activity.liveAct = {}
     try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
   }
+  // Сброс №6: компактное «ЧЧ:ММ» из stale Telegram pin-view могло быть
+  // прочитано как сегодняшнее будущее время и поднять старый чат выше свежих.
+  // Сообщение не может быть из будущего, поэтому такие сохранённые метки
+  // недостоверны и должны быть переучены из service-view/проверенного cache.
+  if (!state.cfg.actReset6) {
+    state.cfg.actReset6 = true
+    const future = Date.now() + 60000
+    for (const p of (state.cfg.pinned || [])) {
+      const id = p && p.id
+      if (!id || state.lastMsgDayOnly[id] === true || !(state.lastMsgAt[id] > future)) continue
+      delete state.lastMsgAt[id]
+      delete state.lastMsgDayOnly[id]
+      delete state.lastMsgText[id]
+      delete state.lastMsgSource[id]
+      delete state.liveAct[id]
+    }
+    if (state.cfg.activity) {
+      state.cfg.activity.lastMsgAt = state.lastMsgAt
+      state.cfg.activity.lastMsgDayOnly = state.lastMsgDayOnly
+      state.cfg.activity.lastMsgText = state.lastMsgText
+      state.cfg.activity.lastMsgSource = state.lastMsgSource
+      state.cfg.activity.liveAct = state.liveAct
+    }
+    try { window.hub.saveConfig(state.cfg).catch(() => {}) } catch (e) {}
+  }
 }
 
 // П.13: сохранение накопленной активности в config.json — дебаунс 20 с,
@@ -976,6 +1001,7 @@ async function getChatNameFor(svcId, wv, pinUrl) {
 function renderChatList() {
   const list = document.getElementById('chat-list')
   if (!list) return
+  const savedScrollTop = list.scrollTop
   list.innerHTML = ''
   const favs = state.cfg.pinned
   const has = favs.length > 0
@@ -988,6 +1014,9 @@ function renderChatList() {
 
   for (const p of favs) list.appendChild(makeChatRow(p))
   applyFavFilter() // фильтр поиска живёт и после перерисовки списка
+  // Фоновые обновления времени/аватаров не должны выкидывать пользователя
+  // наверх длинного списка избранного во время ручной прокрутки.
+  list.scrollTop = Math.min(savedScrollTop, Math.max(0, list.scrollHeight - list.clientHeight))
 
   // Старт — ТОЛЬКО список избранного: никаких автоматически открытых чатов.
   // Вьюха конкретного чата создаётся исключительно по клику пользователя
@@ -1116,7 +1145,7 @@ function makeChatRow(p) {
   row.querySelector('.chat-row-src').textContent = svcName
   setRowPreview(row.querySelector('.chat-row-preview'), state.lastMsgPreview[p.id] || '')
   const timeEl = row.querySelector('.row-time')
-  timeEl.textContent = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id]) : ''
+  timeEl.textContent = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id], state.lastMsgDayOnly?.[p.id] === true) : ''
   timeEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
   row.onclick = (e) => { if (!e.target.closest('.icon-btn') && !e.target.closest('.row-menu')) selectChat(p.id) }
   // меню действий ⋮ (как контекстное меню в MAX): закрепить/открепить, удалить
@@ -1194,7 +1223,7 @@ function localSelfcheck() {
   activateTab('settings')
   const light = document.querySelector('input[name="theme"][value="light"]')
   pass('настройки: «Светлая (мм не поддерживается)»', !!light && !!light.parentElement && light.parentElement.textContent.includes('мм не поддерживается'))
-  pass('настройки: галочки ★/иконки/индексация', !!document.getElementById('fav-badge-always') && !!document.getElementById('tab-icons') && !!document.getElementById('tg-bg-index'))
+  pass('настройки: галочки ★/иконки/индексация/фон pin', !!document.getElementById('fav-badge-always') && !!document.getElementById('tab-icons') && !!document.getElementById('tg-bg-index') && !!document.getElementById('pin-bg-active'))
   const rows = [...document.querySelectorAll('.chat-list .chat-row')]
   pass('строки: есть', rows.length > 0, rows.length)
   let bad = 0
@@ -1332,7 +1361,9 @@ function ensurePinView(p) {
   wv = document.createElement('webview')
   wv.setAttribute('partition', svc.partition)
   wv.setAttribute('allowpopups', '')
-  wv.setAttribute('webpreferences', 'backgroundThrottling=no')
+  // Service views stay unthrottled for background collection. Hidden pin views
+  // are disposable LRU renderers, so let Chromium throttle them off-screen.
+  if (state.cfg.pinBackgroundActive === true) wv.setAttribute('webpreferences', 'backgroundThrottling=no')
   wv.className = 'chat-webview'
   // src назначает очередь предзагрузки (см. enqueueLoad) — не все MM-вьюхи сразу
   const stack = document.getElementById('chat-view-stack')
@@ -2308,7 +2339,9 @@ async function pollUnreadService(svc, job) {
         // TG: запоминаем сопоставление пин → числовой peer-id (после первого
         // нахождения по названию дальше матчуем по pid быстро и однозначно)
         if (svc.id === 'tg' && r && r.favs) {
+          const timeView = cand === state.svcViews.tg ? 'service-list' : 'pin-view'
           for (const f of r.favs) {
+            f.timeView = timeView
             // отравленный/устаревший pid — чистим кэш и матчим заново по названию
             if (f.pidStale) { try { delete state.tgPeerOf[f.id] } catch (e) {} ; continue }
             if (f.pid && f.exact && (!state.tgPeerOf[f.id] || String(state.tgPeerOf[f.id]) === String(f.pid))) {
@@ -2496,7 +2529,7 @@ async function pollUnreadService(svc, job) {
       // («дата + время») и сортируем по нему («главное — время последней активности»)
       state.__prevLastMsgAt = state.__prevLastMsgAt || {}
       state.__prevLastMsgAt[r.id] = state.lastMsgAt[r.id] || 0
-      if (r.found !== false && r.time) mergeLastMessageTime(r.id, parseChatTime(r.time))
+      if (shouldMergeDomTime(svc.id, r)) mergeLastMessageTime(r.id, parseChatTime(r.time))
       // A top-message timestamp is independent of DOM visibility and unread.
       const mt = r.messageTime
       if (svc.id === 'ydx' && r.found === true && mt?.source === 'telemost-row-date' &&
@@ -2563,7 +2596,7 @@ function refreshUnreadPresentation() {
     const svc = state.cfg.services.find(s => s.id === p.serviceId)
     const tEl = row.querySelector('.row-time')
     if (tEl) {
-      const want = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id]) : ''
+      const want = state.lastMsgAt[p.id] ? fmtRowTime(state.lastMsgAt[p.id], state.lastMsgDayOnly?.[p.id] === true) : ''
       if (tEl.textContent !== want) tEl.textContent = want
       tEl.title = state.lastMsgAt[p.id] ? new Date(state.lastMsgAt[p.id]).toLocaleString('ru-RU') : ''
     }
@@ -2586,10 +2619,17 @@ function refreshUnreadPresentation() {
 // Не распозналось — { at: 0 } (не участвует в сортировке).
 // A compact date is a day bucket, never a replacement for a known clock time.
 // Call only after the caller has validated the pin/account identity.
+function shouldMergeDomTime(serviceId, row) {
+  if (!row || row.found === false || !row.time) return false
+  // A Telegram pin-view can show stale compact clocks from its own chat
+  // context. Only the actual service list is a trusted DOM source for time.
+  return serviceId !== 'tg' || row.timeView === 'service-list'
+}
+
 function mergeLastMessageTime(id, observation) {
   const at = observation && observation.at
-  if (!Number.isFinite(at) || at <= 0) return
   const dayOnly = observation.dayOnly === true
+  if (!Number.isFinite(at) || at <= 0) return
   const previous = state.lastMsgAt[id] || 0
   state.lastMsgDayOnly = state.lastMsgDayOnly || {}
   // Legacy caches recorded precision in the formatted label, not a separate map.
@@ -2617,6 +2657,9 @@ function parseChatTime(text) {
   if ((m = t.match(/^(\d{1,2}):(\d{2})$/))) {
     if (+m[1] > 23 || +m[2] > 59) return { at: 0, dayOnly: false }
     const d = new Date(now); d.setHours(+m[1], +m[2], 0, 0)
+    // A message cannot be from later today. A compact clock with a later
+    // value therefore belongs to the previous day, not the future.
+    if (d.getTime() > now.getTime() + 60000) d.setDate(d.getDate() - 1)
     return { at: d.getTime(), dayOnly: false }
   }
   if (/^(вчера|yesterday)$/i.test(t)) {
@@ -2689,21 +2732,23 @@ function fmtChatWhen(ms, dayOnly) {
   return s
 }
 
-// Время строки избранного: сегодня — ЧЧ:ММ, вчера — «вчера», раньше — ДД.ММ(.ГГ).
+// Время строки избранного: сегодня — ЧЧ:ММ, вчера — «ЧЧ:ММ вчера»,
+// раньше — «ЧЧ:ММ ДД.ММ(.ГГ)». Источник без точного часа остаётся day-only.
 // Сортировка при этом идёт по ТОЧНОМУ времени (lastMsgAt), не по этой строке.
-function fmtRowTime(ms) {
+function fmtRowTime(ms, dayOnly = false) {
   if (!ms) return ''
   const d = new Date(ms)
   const n = new Date()
   const pad = x => ('0' + x).slice(-2)
+  const clock = pad(d.getHours()) + ':' + pad(d.getMinutes())
   if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) {
-    return pad(d.getHours()) + ':' + pad(d.getMinutes())
+    return dayOnly ? 'сегодня' : clock
   }
   const y = new Date(n); y.setDate(y.getDate() - 1)
-  if (d.getFullYear() === y.getFullYear() && d.getMonth() === y.getMonth() && d.getDate() === y.getDate()) return 'вчера'
+  if (d.getFullYear() === y.getFullYear() && d.getMonth() === y.getMonth() && d.getDate() === y.getDate()) return dayOnly ? 'вчера' : clock + ' вчера'
   let s = pad(d.getDate()) + '.' + pad(d.getMonth() + 1)
   if (d.getFullYear() !== n.getFullYear()) s += '.' + String(d.getFullYear()).slice(-2)
-  return s
+  return dayOnly ? s : clock + ' ' + s
 }
 
 // Mattermost: в сайдбаре времён нет — время последнего сообщения каждого
@@ -2905,7 +2950,8 @@ function sortFavoritesByActivity() {
   if (!arr || arr.length < 2) return
   const key = (p, i) => {
     // активность = время последнего сообщения; «открыл, но не писал» не бампает
-    const act = state.lastMsgAt[p.id] || 0
+    const rawAct = state.lastMsgAt[p.id] || 0
+    const act = rawAct > Date.now() + 60000 && state.lastMsgDayOnly?.[p.id] !== true ? 0 : rawAct
     if (p.priority) return [3, act, -i]
     if (act) return [2, act, -i]
     const rank = state.rankAct[p.id]
@@ -3176,6 +3222,7 @@ function __chatHubApplyCss(css) {
 async function __chatHubMmUnread(favs) {
   const avatarBudget = { attempts: 0 }
   const out = []
+  const avatarRows = []
   let dmMentions = 0
   let dmUnread = false
   const root = document.querySelector('#SidebarContainer') || document
@@ -3215,8 +3262,23 @@ async function __chatHubMmUnread(favs) {
         }
       }
     }
-    if (f.needAvatar && rowLi) avatar = await __chatHubBoundedAvatar(rowLi, avatarBudget)
+    // MM channels can have no photo at all. Do not spend one of four global
+    // avatar slots on such a row; later real profiles must not starve forever.
+    if (f.needAvatar && rowLi && rowLi.querySelector('img[src]')) avatarRows.push({ id: f.id, row: rowLi })
     out.push({ id: f.id, unread: unread, count: count, mentions: mentions, found: found, avatar: avatar })
+  }
+  if (avatarRows.length) {
+    const cursor = Number.isSafeInteger(window.__hubMmAvatarCursor) ? window.__hubMmAvatarCursor : 0
+    const attempts = Math.min(4, avatarRows.length)
+    for (let step = 0; step < attempts; step++) {
+      const candidate = avatarRows[(cursor + step) % avatarRows.length]
+      const avatar = await __chatHubBoundedAvatar(candidate.row, avatarBudget)
+      if (avatar) {
+        const result = out.find(r => r.id === candidate.id)
+        if (result) result.avatar = avatar
+      }
+    }
+    window.__hubMmAvatarCursor = (cursor + attempts) % avatarRows.length
   }
   return JSON.stringify({ favs: out, dmMentions: dmMentions, dmUnread: dmUnread })
 }
@@ -4023,6 +4085,67 @@ async function applyColumnTweaks(wv, p, attempt) {
 
 /* ---------- настройки ---------- */
 
+function initSettingsTabs(sec) {
+  const settings = sec.querySelector('.settings')
+  if (!settings) return
+  const defs = [
+    ['Вид', 'view', 'Вид'],
+    ['Тема', 'theme', 'Тема'],
+    ['Мессенджеры', 'services', 'Мессенджеры'],
+    ['Сборная вкладка', 'chat-style', 'Оформление чатов'],
+    ['Масштаб', 'zoom', 'Масштаб'],
+    ['Память', 'memory', 'Память'],
+    ['Даты сообщений Telegram', 'telegram', 'Telegram'],
+    ['Избранное', 'favorites', 'Избранное'],
+    ['Диагностика', 'diagnostics', 'Диагностика']
+  ]
+  const headings = Array.from(settings.children).filter(el => el.tagName === 'H3')
+  const panes = []
+  for (let i = 0; i < headings.length; i++) {
+    const heading = headings[i]
+    const nextHeading = headings[i + 1]
+    const def = defs.find(([prefix]) => heading.textContent.trim().startsWith(prefix))
+    if (!def) continue
+    const pane = document.createElement('section')
+    pane.className = 'settings-pane'
+    pane.dataset.settingsPane = def[1]
+    heading.before(pane)
+    for (let node = heading; node && node !== nextHeading;) {
+      const next = node.nextSibling
+      pane.appendChild(node)
+      node = next
+    }
+    panes.push({ key: def[1], label: def[2], pane })
+  }
+  if (!panes.length) return
+  const tabs = document.createElement('div')
+  tabs.className = 'settings-tabs'
+  tabs.setAttribute('role', 'tablist')
+  panes[0].pane.before(tabs)
+  const select = key => {
+    state.settingsTab = key
+    for (const item of panes) {
+      const active = item.key === key
+      item.pane.classList.toggle('hidden', !active)
+      const button = tabs.querySelector('[data-settings-tab="' + item.key + '"]')
+      if (button) {
+        button.classList.toggle('active', active)
+        button.setAttribute('aria-selected', String(active))
+      }
+    }
+  }
+  for (const item of panes) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'settings-tab'
+    button.dataset.settingsTab = item.key
+    button.textContent = item.label
+    button.onclick = () => select(item.key)
+    tabs.appendChild(button)
+  }
+  select(panes.some(item => item.key === state.settingsTab) ? state.settingsTab : panes[0].key)
+}
+
 function buildSettings(sec) {
   sec.innerHTML = `
     <div class="settings">
@@ -4092,16 +4215,25 @@ function buildSettings(sec) {
         <label>Чатов в памяти: <b id="live-views-label"></b></label>
         <input type="range" id="live-views" min="2" max="20" step="1" style="flex:1">
       </div>
-
-      <h3>Индексация Telegram</h3>
-      <p class="hint">Обновление «времени последнего сообщения» у пинов Telegram: приложение
-      ищет чаты и читает список диалогов ТОЛЬКО когда окно свёрнуто и неактивно.
-      <b>По умолчанию выключено</b> — включайте, если хотите свежие времена у пинов
-      в фоне. Активное окно не трогается никогда. Если после включения веб-версия
-      Telegram оставит экран поиска или архив — просто выключите индексацию.</p>
       <div class="form-row">
-        <label><input type="checkbox" id="tg-bg-index"> Включить фоновую индексацию Telegram</label>
+        <label><input type="checkbox" id="pin-bg-active"> Быстро возвращаться в недавно открытые чаты</label>
       </div>
+      <p class="hint"><b>Если включено:</b> вы переходите из одного чата в другой и возвращаетесь назад почти сразу.
+      Программа держит недавно открытые чаты в рабочем состоянии, поэтому сильнее нагружает компьютер.<br>
+      <b>Если выключено:</b> приложение экономит процессор, видеокарту и память. Возврат в давно открытый чат
+      иногда займёт пару секунд. Изменение применяется после следующего перезапуска ChatHub.</p>
+
+      <h3>Даты сообщений Telegram</h3>
+      <p class="hint">Эта галочка относится только к Telegram. Когда окно свёрнуто, программа может
+      обновить дату последнего сообщения у избранных чатов.</p>
+      <div class="form-row">
+        <label><input type="checkbox" id="tg-bg-index"> Обновлять даты Telegram, пока я не пользуюсь приложением</label>
+      </div>
+      <p class="hint"><b>Если включено:</b> пока ChatHub свёрнут, даты и время у избранных Telegram-чатов
+      будут обновляться сами, даже если вы их не открывали.<br>
+      <b>Если выключено:</b> даты Telegram обновятся, когда чат появится в обычном списке Telegram
+      или когда вы его откроете. Программа не будет ничего делать с Telegram в фоне.<br>
+      Если после включения Telegram оставит экран поиска или архив, выключите эту галочку.</p>
 
       <h3>Избранное</h3>
       <div id="pin-rows"></div>
@@ -4245,6 +4377,15 @@ function buildSettings(sec) {
       renderChatList()
     }
   }
+  const pinBg = document.getElementById('pin-bg-active')
+  if (pinBg) {
+    pinBg.checked = state.cfg.pinBackgroundActive === true
+    pinBg.onchange = async () => {
+      state.cfg.pinBackgroundActive = pinBg.checked
+      await window.hub.saveConfig(state.cfg)
+      toast(pinBg.checked ? 'Чаты в фоне будут работать в полную силу после перезапуска' : 'Чаты в фоне будут экономить ресурсы после перезапуска')
+    }
+  }
 
   // тумблер «фоновая индексация Telegram» — применяется сразу, без перезапуска
   const tgBg = document.getElementById('tg-bg-index')
@@ -4269,6 +4410,7 @@ function buildSettings(sec) {
     await window.hub.saveConfig(state.cfg)
     renderPinRows()
   }
+  initSettingsTabs(sec)
 }
 
 function renderSvcRows() {

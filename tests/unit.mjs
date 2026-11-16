@@ -424,7 +424,7 @@ function unreadFixture(service, document) {
     pinAvatars: { synthetic: 'already-cached' }, unreadTotals: {}, unreadTotalsAt: {},
     unreadBaseC: {}, unreadBaseM: {}, prevUnread: {}, rankAct: {}, lastMsgAt: {}, lastMsgText: {}, lastMsgPreview: {}, liveAct: {} }
   const ctx = sandbox(['pollUnread', '__chatHubMaxUnread', '__chatHubYdxUnread', '__chatHubGrabAvatar',
-    '__chatHubScanRows', '__chatHubBoundedAvatar', 'formatMaxPreview', 'unreadDeltaFor', 'shouldBumpLiveAct', 'runUnreadJob',
+    '__chatHubScanRows', '__chatHubBoundedAvatar', 'formatMaxPreview', 'unreadDeltaFor', 'shouldBumpLiveAct', 'shouldMergeDomTime', 'runUnreadJob',
     'unreadViewState', 'unreadGuestCall', 'restorePreviewAuthor', 'pollUnreadService', 'refreshUnreadPresentation', 'refreshSelectedUnread'], {
     setTimeout, clearTimeout,
     state, favoritesOf: () => [pin], svcViewFor: () => view,

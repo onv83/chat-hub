@@ -32,7 +32,7 @@ function harness(ids = ['mm', 'max']) {
     sortFavoritesByActivity() {}, scheduleActSave() {}, mmTabCounts: async () => {}, mmLastPosts: async () => {},
     __chatHubGrabAvatar: function () {}, formatMaxPreview: function () {}, tgSearchResolve: async () => null,
     UNREAD_EXTRACTORS: Object.fromEntries(ids.map(id => [id, function () {}])) })
-  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','recoverStaleMmGuest','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
+  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','recoverStaleMmGuest','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
     if (name.startsWith('mm')) continue
     vm.runInContext(extract(name), ctx)
   }

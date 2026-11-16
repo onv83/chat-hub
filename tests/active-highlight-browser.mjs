@@ -67,11 +67,11 @@ test('active highlight: real dark/light CSS preserves selection through hover an
     }
     await call('Emulation.setDeviceMetricsOverride', { width: 900, height: 650, deviceScaleFactor: 1, mobile: false })
     await call('DOM.enable'); await call('CSS.enable')
-    await evaluate(`document.head.innerHTML = '<style>' + ${JSON.stringify(css)} + '</style>'; document.body.innerHTML = '<div class="chat-list" id="chat-list" style="width:420px;background:var(--panel)"></div>'`)
-    const functions = ['makeChatRow', 'setRowPreview', 'setRowAvatar', 'setRowBadge', 'syncChatSelection', 'renderChatList', 'selectChat', 'sortFavoritesByActivity', 'removePin'].map(extract).join('\n') + '\n' + source.slice(source.indexOf('const escapeHtml ='), source.indexOf('let toastTimer ='))
+    await evaluate(`document.head.innerHTML = '<style>' + ${JSON.stringify(css)} + '</style>'; document.body.innerHTML = '<div class="chat-list" id="chat-list" style="width:420px;height:180px !important;max-height:180px !important;overflow-y:scroll !important;display:block !important;scroll-behavior:auto !important;background:var(--panel)"></div>'`)
+    const functions = ['makeChatRow', 'setRowPreview', 'setRowAvatar', 'setRowBadge', 'syncChatSelection', 'renderChatList', 'selectChat', 'sortFavoritesByActivity', 'removePin', 'initSettingsTabs', 'buildSettings'].map(extract).join('\n') + '\n' + source.slice(source.indexOf('const escapeHtml ='), source.indexOf('let toastTimer ='))
     await evaluate(`
       var state = { activePinId: '', cfg: { selectedPinId: 'pin-mm', services: ['mm','tg','max','ydx'].map(id => ({ id, name: id.toUpperCase() })), pinned: ['mm','tg','max','ydx'].map(id => ({ id: 'pin-'+id, serviceId: id, title: 'Synthetic '+id.toUpperCase(), url: 'https://fixture.invalid/'+id })) }, svcIcons: {}, lastMsgPreview: {}, lastMsgAt: {}, liveAct: {}, rankAct: {}, pinViews: {}, lastUsed: {} };
-      window.hub = { saveConfig: async () => {} };
+      window.hub = { saveConfig: async () => {}, configPath: async () => '', getVersion: async () => '0.0.0' };
       function badgeColor() { return '#5865f2' }
       function applyFavFilter() {}
       function trimPinViews() {}
@@ -80,6 +80,16 @@ test('active highlight: real dark/light CSS preserves selection through hover an
       async function queueSelectedUnread() {} // polling is tested separately in polling.mjs
       function updateSvcBar() {}
       function toast() {}
+      function applyLayout() {}
+      function applyBadgeVisibility() {}
+      function applyTabIcons() {}
+      function applyTheme() {}
+      function renderSvcRows() {}
+      function renderCssRows() {}
+      function renderZoomRows() {}
+      function renderPinRows() {}
+      function maxLiveViews() { return 5 }
+      function localSelfcheck() { return [] }
       function fmtRowTime() { return '12:34' }
       function ensurePinView(p) { return state.pinViews[p.id] ||= Object.assign(document.createElement('div'), { executeJavaScript() {} }) }
       function destroyPinView(id) { delete state.pinViews[id] }
@@ -87,6 +97,21 @@ test('active highlight: real dark/light CSS preserves selection through hover an
       renderChatList();
     `)
     assert.equal(await evaluate(`document.querySelectorAll('.selected').length`), 0, 'saved startup selection stays empty')
+    const settings = await evaluate(`(() => {
+      const sec=document.createElement('section'); document.body.appendChild(sec);
+      state.cfg={layout:'tabs',theme:'dark',services:[],pinned:[],columnCss:{},zoom:{},maxLiveViews:5,badgeVisible:true,svcBadgeVisible:true,svcNameVisible:true,favBadgeAlways:false,tabIcons:false,tgBackgroundIndex:false,pinBackgroundActive:false};
+      buildSettings(sec);
+      return { tabs:[...sec.querySelectorAll('.settings-tab')].map(x=>x.dataset.settingsTab), visible:[...sec.querySelectorAll('.settings-pane:not(.hidden)')].map(x=>x.dataset.settingsPane) };
+    })()`)
+    assert.deepEqual(settings.tabs, ['view','theme','services','chat-style','zoom','memory','telegram','favorites','diagnostics'])
+    assert.deepEqual(settings.visible, ['view'])
+    const settingsAfterClick = await evaluate(`(() => { document.querySelector('.settings-tab[data-settings-tab="memory"]').click(); return { visible:[...document.querySelectorAll('.settings-pane:not(.hidden)')].map(x=>x.dataset.settingsPane), active:[...document.querySelectorAll('.settings-tab.active')].map(x=>x.dataset.settingsTab) } })()`)
+    assert.deepEqual(settingsAfterClick.visible, ['memory'])
+    assert.deepEqual(settingsAfterClick.active, ['memory'])
+    const scrollState = await evaluate(`state.cfg.pinned = Array.from({length:100},(_,i)=>({id:'scroll-'+i,serviceId:'mm',title:'Scroll '+i,url:'https://fixture.invalid/'+i})); renderChatList(); const list=document.getElementById('chat-list'); list.scrollTop=240; const before=list.scrollTop; const beforeHeight=list.scrollHeight; renderChatList(); ({before,after:list.scrollTop,beforeHeight,afterHeight:list.scrollHeight,clientHeight:list.clientHeight})`)
+    assert.equal(scrollState.before, 240, JSON.stringify(scrollState))
+    assert.equal(scrollState.after, 240, 'background redraw preserves the user scroll position')
+    await evaluate(`state.cfg={selectedPinId:'pin-mm',services:['mm','tg','max','ydx'].map(id=>({id,name:id.toUpperCase()})),pinned:['mm','tg','max','ydx'].map(id=>({id:'pin-'+id,serviceId:id,title:'Synthetic '+id.toUpperCase(),url:'https://fixture.invalid/'+id}))}; state.activePinId=''; renderChatList();`)
     const results = []
     for (const theme of ['dark', 'light']) {
       await evaluate(`document.body.className = ${JSON.stringify(theme === 'light' ? 'theme-light' : '')}`)

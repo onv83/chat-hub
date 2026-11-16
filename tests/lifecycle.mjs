@@ -151,9 +151,9 @@ test('lifecycle: CSS frame cancels fallback and reinstall cancels old work', () 
   c.time.tick()
   assert.equal(c.applies(), 4)
 })
-function watchdogContext() {
+function watchdogContext(pinBackgroundActive = false) {
   const time = clock(), pending = [], repairs = []
-  const state = { cfg: { services: ['mm', 'tg', 'max', 'ydx'].map(id => ({ id, partition: 'fixture' })), columnCss: { tg: '.fixture{}' }, selectedPinId: 'p' }, activePinId: 'p', pinViews: {}, lastUsed: {}, svcViews: { tg: {} } }
+  const state = { cfg: { services: ['mm', 'tg', 'max', 'ydx'].map(id => ({ id, partition: 'fixture' })), columnCss: { tg: '.fixture{}' }, selectedPinId: 'p', pinBackgroundActive }, activePinId: 'p', pinViews: {}, lastUsed: {}, svcViews: { tg: {} } }
   let calls = 0, physical = 0, peak = 0, syncError = false
   const ctx = context(['ensurePinView', 'destroyPinView', 'enqueueLoad', 'pumpPreload'], {
     ...time, state,
@@ -174,6 +174,14 @@ function watchdogContext() {
   const tick = time.intervals.get(view.__hubTimer)
   return { ctx, state, time, pin, view, tick, pending, repairs, throwNext: () => { syncError = true }, stats: () => ({ calls, physical, peak }) }
 }
+test('pin view leaves Chromium background throttling enabled', () => {
+  const c = watchdogContext()
+  assert.equal(c.view.attributes.webpreferences, undefined)
+})
+test('pin view disables background throttling only when explicitly configured', () => {
+  const c = watchdogContext(true)
+  assert.equal(c.view.attributes.webpreferences, 'backgroundThrottling=no')
+})
 test('CSS watchdog: frozen guest has one physical evaluation across 100 ticks', async () => {
   const c = watchdogContext()
   const first = c.tick()
