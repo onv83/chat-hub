@@ -35,6 +35,32 @@ function sandbox(names, extra = {}) {
   return ctx
 }
 
+test('taskbar badge mirrors unread only in favourites and clears at zero', () => {
+  const calls = [], combined = []
+  const state = {
+    cfg: { pinned: [{ id: 'numbered' }, { id: 'dot' }, { id: 'none' }], services: [] },
+    unreadTotals: { numbered: { c: 3, m: 2 }, dot: { c: 0, m: 0 } },
+    unreadDots: { dot: true }
+  }
+  const ctx = sandbox(['refreshUnreadPresentation'], {
+    state,
+    navigator: {
+      setAppBadge(value) { calls.push(['set', value]); return Promise.resolve() },
+      clearAppBadge() { calls.push(['clear']); return Promise.resolve() }
+    },
+    document: { querySelector() { return null } },
+    updateBadge2(id, total, mentions) { combined.push([id, total, mentions]) },
+    sortFavoritesByActivity() {}, scheduleActSave() {}
+  })
+  ctx.refreshUnreadPresentation()
+  assert.deepEqual(combined, [['combined', 4, 2]])
+  assert.deepEqual(calls, [['set', 4]])
+  state.unreadTotals = {}
+  state.unreadDots = {}
+  ctx.refreshUnreadPresentation()
+  assert.deepEqual(calls, [['set', 4], ['clear']])
+})
+
 // Startup integration: real init/buildSection/activateTab/renderChatList/queue,
 // with only DOM, timers and unrelated UI/IPC effects replaced. No Electron launch.
 function startupSandbox(interactive = false) {
@@ -130,7 +156,7 @@ function startupSandbox(interactive = false) {
     state, document,
     window: { hub: { getConfig: async () => ({ services, pinned, selectedPinId: pinned[0].id }), saveConfig: async () => {} } },
     ensureKeys: noop, sortFavoritesByActivity: noop, buildTabs: noop, applyTheme: noop, applyLayout: noop,
-    applyBadgeVisibility: noop, refreshTabIcons: noop, initListSplitter: noop,
+    applyBadgeVisibility: noop, refreshTabIcons: noop, refreshUnreadPresentation: noop, initListSplitter: noop,
     badgeColor: () => '#000', captureSvcIcon: noop, updateSvcBar: noop,
     makeChatRow: () => new Element('div'), applyFavFilter: noop, trimPinViews: noop,
     ensurePinView: () => assert.fail('startup must not preload pin views'),

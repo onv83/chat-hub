@@ -81,7 +81,7 @@ test('startup sorts restored Telegram activity before the first background poll'
    window:{hub:{getConfig:async()=>cfg,saveConfig:async()=>{}}},
    document:{querySelector(){return null},getElementById(){return null},addEventListener(){}},
    setInterval(){return 0},setTimeout(){return 0},clearTimeout(){},
-   buildTabs(){},applyTheme(){},applyLayout(){},applyBadgeVisibility(){},refreshTabIcons(){},activateTab(){},initListSplitter(){},
+   buildTabs(){},applyTheme(){},applyLayout(){},applyBadgeVisibility(){},refreshTabIcons(){},refreshUnreadPresentation(){},activateTab(){},initListSplitter(){},
    renderChatList(){rendered++}});
  for(const n of ['restorePreviewAuthor','ensureKeys','sortFavoritesByActivity','init'])vm.runInContext(fn(n),ctx);
  await ctx.init();

@@ -367,6 +367,11 @@ function createWindow() {
       webviewTag: true
     }
   })
+  // Windows taskbar overlays belong to a window, not app.setBadgeCount().
+  // Clear a stale overlay left from an earlier notification at each launch.
+  if (process.platform === 'win32' && typeof win.setOverlayIcon === 'function') {
+    try { win.setOverlayIcon(null, '') } catch (e) {}
+  }
   try {
     if (saved && saved.x !== undefined && saved.y !== undefined) win.setBounds({ x: saved.x, y: saved.y, width: saved.width, height: saved.height })
     if (saved && saved.maximized) win.maximize()

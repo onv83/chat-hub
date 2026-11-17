@@ -32,6 +32,7 @@ function fixture(t, initial) {
     static getAllWindows() { return [] }
     constructor() { steps.push(['window']); this.webContents = { setWindowOpenHandler() {} } }
     on() {} loadFile() {} setBounds() {} maximize() {}
+    setOverlayIcon(icon, description) { steps.push(['overlay', icon, description]) }
   }
   const electron = {
     app: { commandLine: { appendSwitch() {} }, getPath: () => dir,
@@ -66,6 +67,13 @@ test('startup denies guest notifications on all four service partitions before f
     assertDenied(f.sessions.get('persist:' + id))
     assert.ok(f.steps.findIndex(s => s[0] === 'check' && s[1] === 'persist:' + id) < f.steps.findIndex(s => s[0] === 'window'))
   }
+})
+test('startup clears the Windows taskbar overlay on the application window', t => {
+  const f = fixture(t)
+  const overlay = f.steps.findIndex(step => step[0] === 'overlay')
+  const window = f.steps.findIndex(step => step[0] === 'window')
+  assert.deepEqual(f.steps[overlay], ['overlay', null, ''])
+  assert.ok(window >= 0 && overlay > window)
 })
 test('policy remains local to configured service sessions, not default/unrelated sessions', t => {
   const f = fixture(t)
