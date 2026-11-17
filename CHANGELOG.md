@@ -2,6 +2,11 @@
 
 Формат: [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [SemVer](https://semver.org/lang/ru/).
 
+## [Unreleased]
+
+### Изменено
+- В README добавлена явная инструкция: portable ZIP нужно сначала полностью извлечь, а не запускать `ChatHub.exe` из архива или отдельно от DLL.
+
 ## [0.3.4] — 2026-11-17
 
 ### Добавлено
