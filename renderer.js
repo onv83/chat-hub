@@ -209,6 +209,9 @@ async function init() {
   applyBadgeVisibility()
   refreshTabIcons()
   activateTab('combined')
+  // Сразу очистить старый системный badge или восстановить сохранённый итог
+  // избранного, не дожидаясь первого опроса через пять секунд.
+  refreshUnreadPresentation()
   initListSplitter()
   // вкладки мессенджеров грузим сразу при старте (панели скрыты через visibility,
   // но разложены — webview правильного размера): переключение вкладки мгновенное.
@@ -2588,6 +2591,18 @@ function refreshUnreadPresentation() {
   // не все чаты мессенджеров: всего непрочитанных в избранных чатах
   // + @упоминания в них; вкладки самих мессенджеров остаются по всему списку
   updateBadge2('combined', favSumT, favSumM)
+  // Значок ChatHub в панели задач повторяет только непрочитанное избранного —
+  // то же число, что показывает «★ Сборная». Веб-мессенджеры тоже умеют
+  // ставить badge сами, поэтому после каждого цикла опроса задаём наше число.
+  try {
+    const nav = typeof navigator === 'undefined' ? null : navigator
+    const count = Math.max(0, Math.floor(Number(favSumT) || 0))
+    const call = count > 0 ? nav?.setAppBadge : nav?.clearAppBadge
+    if (typeof call === 'function') {
+      const pending = count > 0 ? call.call(nav, count) : call.call(nav)
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+    }
+  } catch (e) {}
   // время последнего сообщения в строках: «Мессенджер · 17:30»
   // (в т.ч. MM — из API; полный текст времени — в подсказке)
   for (const p of state.cfg.pinned) {

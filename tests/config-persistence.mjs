@@ -27,6 +27,7 @@ function fixture(t, initial, backup, faults = {}) {
     getBounds() { return { x: 1, y: 2, width: 1100, height: 900 } }
     loadFile() {}
     setBounds() {}
+    setOverlayIcon() {}
   }
   const electron = {
     app: { commandLine: { appendSwitch() {} }, getPath: () => dir, on() {}, requestSingleInstanceLock: () => true, setAppUserModelId() {}, whenReady: () => ({ then: fn => ready.push(fn) }) },
