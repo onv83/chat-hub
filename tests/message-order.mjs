@@ -16,7 +16,7 @@ function harness(service){
  let observations=pins.map(p=>({id:p.id,found:true,time:'вчера',count:0,mentions:0}));
  state.svcViews[service]={isConnected:true,addEventListener(){},executeJavaScript:async source=>{new vm.Script(source);return JSON.stringify({favs:observations,svcTotals:{total:0,mentions:0}})}};
  const ctx=vm.createContext({state,Date:Clock,console,setTimeout,clearTimeout,document:{querySelector(){return null}},favoritesOf:()=>state.cfg.pinned,svcViewFor:()=>state.svcViews[service],updateBadge(){},updateBadge2(){},renderChatList(){},scheduleActSave(){},mmTabCounts:async()=>{},mmLastPosts:async()=>{},tgSearchResolve:async()=>null,__chatHubGrabAvatar:function(){},formatMaxPreview:function(){},UNREAD_EXTRACTORS:{[service]:function(){}}});
- for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','parseChatTime','fmtChatWhen','sortFavoritesByActivity','mergeLastMessageTime','activitySnapshot','ensureKeys','restorePreviewAuthor'])vm.runInContext(fn(n),ctx);
+ for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','tabBadgeTotal','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','parseChatTime','fmtChatWhen','sortFavoritesByActivity','mergeLastMessageTime','activitySnapshot','ensureKeys','restorePreviewAuthor'])vm.runInContext(fn(n),ctx);
  return {ctx,state,set(rows){observations=rows}};
 }
 for(const service of ['mm','tg','max','ydx'])test(service+': midnight order and verified provenance survive restart and missing/day-only refresh',async()=>{

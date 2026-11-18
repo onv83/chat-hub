@@ -61,7 +61,7 @@ for (const service of ['tg', 'max', 'ydx']) {
     assert.ok(res.favs.every(r => r.found))
     assert.deepEqual(res.favs.map(r => r.preview), ['preview 0', 'preview 1', 'preview 2'])
     assert.equal(res.svcTotals, null, 'virtual windows do not prove whole-service totals')
-    assert.equal(res.observedTotals.total, 6)
+    assert.equal(res.observedTotals.total, 2, 'lower bound comes from the initial visible snapshot, not a recycled sweep')
     assert.deepEqual(res.favs.map(r => r.avatar), ['avatar:Room [000]', 'avatar:Room [001]', 'avatar:Room [002]'])
     assert.equal(h.scroller.scrollTop, 80)
     assert.ok(h.elapsed() < 3500)
@@ -93,7 +93,7 @@ for (const service of ['tg', 'max', 'ydx']) {
     let reads = 0
     const query = h.ctx.document.querySelectorAll
     h.ctx.document.querySelectorAll = selector => {
-      if ((selector === 'aside div.item' || selector === '.yamb-chat-list-item' || selector === 'a.row-clickable[href^="#"]') && ++reads === 2) throw Error('synthetic render failure')
+      if ((selector === 'aside div.item' || selector === '.yamb-chat-list-item' || selector === 'a.row-clickable[href^="#"]') && ++reads === 3) throw Error('synthetic render failure')
       return query(selector)
     }
     await assert.rejects(h.run(true), /synthetic render failure/)
@@ -114,10 +114,10 @@ for (const service of ['tg', 'max', 'ydx']) {
   })
 }
 
-test('cached unread observations survive activity save/restore exactly once', () => {
+test('only exact Mattermost and explicitly partial service-tab totals survive activity restore', () => {
   const state = { cfg: { services: [{ id: 'max' }], pinned: [{ id: 'p', serviceId: 'max' }], actReset1: true, actReset2: true, actReset3: true, actReset4: true, actReset5: true } }
   for (const k of ['lastMsgAt','lastMsgText','lastMsgPreview','msgAuth','liveAct','tgPeerOf','prevUnread','unreadBaseC','unreadBaseM']) state[k] = {}
-  Object.assign(state, { unreadTotals: { p: { c: 7, m: 2 } }, unreadTotalsAt: { p: 12345 }, unreadDots: { p: true }, svcTabTotals: { max: { t: 25, m: 2 } } })
+  Object.assign(state, { unreadTotals: { p: { c: 7, m: 2 } }, unreadTotalsAt: { p: 12345 }, unreadDots: { p: true }, svcTabTotals: { mm: { t: 25, m: 2 }, max: { t: 20, m: 0 }, tg: { t: 7, m: 0, partial: true } } })
   const ctx = vm.createContext({ state, tgScrollDone: false, console: { log() {} } })
   for (const n of ['activitySnapshot','ensureKeys','restorePreviewAuthor']) load(ctx, n)
   state.cfg.activity = JSON.parse(JSON.stringify(ctx.activitySnapshot()))
@@ -127,7 +127,10 @@ test('cached unread observations survive activity save/restore exactly once', ()
   assert.equal(state.unreadTotals.p.m, 2)
   assert.equal(state.unreadTotalsAt.p, 12345)
   assert.equal(state.unreadDots.p, true)
-  assert.equal(state.svcTabTotals.max.t, 25)
+  assert.equal(state.svcTabTotals.mm.t, 25)
+  assert.equal(state.svcTabTotals.tg.t, 7)
+  assert.equal(state.svcTabTotals.tg.partial, true)
+  assert.equal(state.svcTabTotals.max, undefined)
   state.unreadTotals.p = { c: 0, m: 0 }
   ctx.ensureKeys(state.cfg)
   assert.equal(state.unreadTotals.p.c, 0, 'no stale rehydration during later renders')
@@ -148,7 +151,7 @@ test('mm: hung optional avatars cannot starve API unread publication or retain e
     updateBadge2() {}, updateBadge() {}, sortFavoritesByActivity() {}, scheduleActSave() {},
     mmTabCounts: async () => {}, mmLastPosts: async () => {},
     __chatHubGrabAvatar: async function () { window.avatarCalls++; return new Promise(() => {}) } })
-  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMmUnread']) load(ctx, name)
+  for (const name of ['tabBadgeTotal','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMmUnread']) load(ctx, name)
   ctx.UNREAD_EXTRACTORS = { mm: ctx.__chatHubMmUnread }
   const start = performance.now()
   await ctx.pollUnread()
@@ -200,7 +203,7 @@ for (const service of ['tg', 'max', 'ydx']) test(`${service}: real 4.5s schedule
     favoritesOf: () => state.cfg.pinned, svcViewFor: () => state.svcViews[service],
     updateBadge2() {}, updateBadge() {}, sortFavoritesByActivity() {}, scheduleActSave() {},
     tgSearchResolve: async () => null, __chatHubGrabAvatar: async function () { return new Promise(() => {}) } })
-  for (const name of ['runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMaxUnread','__chatHubYdxUnread','__chatHubTgUnread']) load(ctx, name)
+  for (const name of ['tabBadgeTotal','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','tgPidSafe','restorePreviewAuthor','__chatHubScanRows','__chatHubBoundedAvatar','formatMaxPreview','__chatHubMaxUnread','__chatHubYdxUnread','__chatHubTgUnread']) load(ctx, name)
   ctx.UNREAD_EXTRACTORS = { [service]: ctx[service === 'tg' ? '__chatHubTgUnread' : service === 'max' ? '__chatHubMaxUnread' : '__chatHubYdxUnread'] }
   const start = performance.now()
   await ctx.pollUnread()

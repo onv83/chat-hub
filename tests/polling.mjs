@@ -32,7 +32,7 @@ function harness(ids = ['mm', 'max']) {
     sortFavoritesByActivity() {}, scheduleActSave() {}, mmTabCounts: async () => {}, mmLastPosts: async () => {},
     __chatHubGrabAvatar: function () {}, formatMaxPreview: function () {}, tgSearchResolve: async () => null,
     UNREAD_EXTRACTORS: Object.fromEntries(ids.map(id => [id, function () {}])) })
-  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','recoverStaleMmGuest','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
+  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','tabBadgeTotal','runUnreadJob','unreadViewState','unreadGuestCall','recoverStaleMmGuest','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
     if (name.startsWith('mm')) continue
     vm.runInContext(extract(name), ctx)
   }
@@ -50,6 +50,22 @@ test('virtual partial service totals never replace a cached service badge with f
   await h.ctx.pollUnread()
   assert.equal(h.badges.some(b => b[0] === 'max'), false)
   assert.deepEqual(h.state.svcTabTotals.max, { t: 20, m: 3 })
+})
+
+test('Mattermost authoritative zero clears an inherited sidebar unread marker', async () => {
+  const h = harness(['mm'])
+  h.state.unreadTotals.mm = { c: 7, m: 0 }
+  h.state.unreadTotalsAt.mm = 123
+  h.state.unreadDots = { mm: true }
+  h.state.mmPinCounts = { mm: { count: 0, mentions: 0, observedAt: 1000 } }
+  h.replies.mm = async () => JSON.stringify({
+    favs: [{ id: 'mm', found: true, count: 0, mentions: 0, unread: true }],
+    svcTotals: { total: 0, mentions: 0 }
+  })
+  await h.ctx.pollUnread()
+  assert.equal(h.state.unreadTotals.mm.c, 0)
+  assert.equal(h.state.unreadTotals.mm.m, 0)
+  assert.equal(h.state.unreadDots.mm, false)
 })
 
 function result(id, count) { return JSON.stringify({ favs: [{ id, count, mentions: 0, found: true }], svcTotals: { total: count, mentions: 0 } }) }

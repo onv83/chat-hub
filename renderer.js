@@ -397,6 +397,16 @@ function ensureKeys(cfg) {
       state[key] = state[key] || {}
       merge(state[key], A[key])
     }
+    // Older versions persisted virtual-list totals without marking them as a
+    // partial lower bound. They must not block a fresh observation forever.
+    let droppedLegacyTabTotal = false
+    for (const [serviceId, total] of Object.entries(state.svcTabTotals || {})) {
+      if (serviceId !== 'mm' && total?.partial !== true) {
+        delete state.svcTabTotals[serviceId]
+        droppedLegacyTabTotal = true
+      }
+    }
+    if (droppedLegacyTabTotal && state.cfg.activity) state.cfg.activity.svcTabTotals = { ...state.svcTabTotals }
     if (A.tgScrollDone) tgScrollDone = true
     console.log('[hub] активность восстановлена из конфига:', Object.keys(A.lastMsgAt || {}).length, 'времён')
   }
@@ -540,7 +550,7 @@ function buildTabs() {
     mbadge.className = 'badge badge-m'
     b.appendChild(mbadge)
     const cached = (state.svcTabTotals || {})[svc.id]
-    if (cached) updateBadge2(svc.id, cached.t || 0, cached.m || 0)
+    if (cached) updateBadge2(svc.id, cached.t || 0, cached.m || 0, cached.partial === true)
   }
   let total = 0, mentions = 0
   for (const p of state.cfg.pinned) {
@@ -556,6 +566,10 @@ function buildTabs() {
 
 // иконки вкладок: Сборная ★, настройки ⚙, мессенджеры — favicon (data-URL)
 // или первая буква названия, пока favicon не захвачен
+function isSafeSvcIconDataUrl(value) {
+  return typeof value === 'string' && value.length <= 400000 &&
+    /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(value)
+}
 function refreshTabIcons() {
   const firstLetter = svcId => {
     const svc = (state.cfg.services || []).find(s => s.id === svcId)
@@ -569,8 +583,13 @@ function refreshTabIcons() {
     else if (id === 'settings') ic.textContent = '⚙'
     else if (id.startsWith('svc:')) {
       const url = state.svcIcons[id.slice(4)]
-      if (url) { ic.innerHTML = '<img alt="" src="' + url + '">' }
-      else ic.textContent = firstLetter(id.slice(4))
+      if (isSafeSvcIconDataUrl(url)) {
+        ic.textContent = ''
+        const img = document.createElement('img')
+        img.alt = ''
+        img.src = url
+        ic.appendChild(img)
+      } else ic.textContent = firstLetter(id.slice(4))
     }
   })
 }
@@ -752,6 +771,7 @@ function buildSection(id, deferSrc) {
   bar.innerHTML = `
     <span class="svc-dot"></span>
     <span class="svc-name"></span>
+    <button class="btn return-service" title="Вернуться к исходной странице сервиса">↻ К исходной странице</button>
     <div class="fav-menu-wrap">
       <button class="btn open-fav-menu">★ Избранное <span class="fav-count"></span></button>
       <div class="fav-menu hidden"></div>
@@ -771,7 +791,6 @@ function buildSection(id, deferSrc) {
   wv.className = 'svc-webview'
   sec.appendChild(wv)
   state.svcViews[svc.id] = wv
-  if (svc.id === 'ydx' && window.ChatHubServiceHealth) window.ChatHubServiceHealth.attach(wv, bar)
 
   // счётчик непрочитанных в заголовке вкладки — только для сервисов без
   // собственного экстрактора (у остальных считаем сами, по избранному)
@@ -805,6 +824,12 @@ function buildSection(id, deferSrc) {
   }
 
   const pinBtn = bar.querySelector('.pin-current')
+  const returnBtn = bar.querySelector('.return-service')
+  returnBtn.onclick = async () => {
+    if (returnBtn.disabled) return
+    returnBtn.disabled = true
+    try { await returnServiceToOrigin(svc) } finally { returnBtn.disabled = false }
+  }
   pinBtn.onclick = async () => {
     if (pinBtn.dataset.pin) { await removePin(pinBtn.dataset.pin); return }
     await pinCurrentChat(svc)
@@ -831,15 +856,30 @@ function updateBadge(svcId, text, mention) {
 // (красный) и упоминаний пользователя лично (яркий @-чип). MM берёт числа
 // из API /users/me/teams/unread (mmTabCounts); TG/MAX/ydx — суммы по всем
 // строкам списка от их экстракторов (svcTotals).
-function updateBadge2(svcId, total, mentions) {
+function tabBadgeTotal(res) {
+  const n = value => Math.max(0, Math.floor(Number(value) || 0))
+  if (res?.svcTotals && typeof res.svcTotals === 'object') {
+    return { t: n(res.svcTotals.total), m: n(res.svcTotals.mentions), partial: false }
+  }
+  if (res?.observedTotals && typeof res.observedTotals === 'object') {
+    const t = n(res.observedTotals.total), m = n(res.observedTotals.mentions)
+    if (t > 0 || m > 0) return { t, m, partial: true }
+  }
+  return null
+}
+function updateBadge2(svcId, total, mentions, partial = false) {
   const b = document.querySelector(svcId === 'combined' ? '.tab[data-tab="combined"] .badge' : '.tab[data-tab="svc:' + svcId + '"] .badge')
   const m = b && b.parentElement && b.parentElement.querySelector('.badge.badge-m')
   if (!b || !m) return
-  b.textContent = total > 0 ? String(total) : ''
-  b.classList.toggle('on', total > 0)
+  const count = Math.max(0, Math.floor(Number(total) || 0))
+  const mentionCount = Math.max(0, Math.floor(Number(mentions) || 0))
+  b.textContent = count > 0 ? String(count) + (partial ? '+' : '') : ''
+  b.title = partial && count > 0 ? 'Не менее ' + count + ' непрочитанных' : ''
+  b.classList.toggle('on', count > 0)
   b.classList.remove('mention')
-  m.textContent = mentions > 0 ? '@' + mentions : ''
-  m.classList.toggle('on', mentions > 0)
+  m.textContent = mentionCount > 0 ? '@' + mentionCount + (partial ? '+' : '') : ''
+  m.title = partial && mentionCount > 0 ? 'Не менее ' + mentionCount + ' упоминаний' : ''
+  m.classList.toggle('on', mentionCount > 0)
   m.classList.add('mention')
 }
 
@@ -1459,7 +1499,7 @@ async function captureSvcIcon(svcId, wv) {
       ' if (!blob || !blob.size || blob.size > 300000) return \'\';' +
       ' return await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => res(\'\'); fr.readAsDataURL(blob) })' +
       ' } catch (e) { return \'\' } })()')
-    if (dataUrl && !state.svcIcons[svcId]) {
+    if (isSafeSvcIconDataUrl(dataUrl) && !state.svcIcons[svcId]) {
       state.svcIcons[svcId] = dataUrl
       // перерисовать строки: буквы → фирменные иконки
       renderChatList()
@@ -1475,6 +1515,7 @@ function renderViewHead(p, svc) {
     ${svc && state.svcIcons[svc.id] ? '<img class="svc-badge svc-icon" alt="">' : '<span class="svc-badge"></span>'}
     <span class="view-title"></span>
     <span class="view-svc"></span>
+    <button class="icon-btn" id="vh-return" title="Вернуться к исходной странице чата">↻</button>
     <button class="icon-btn" id="vh-open" title="Открыть во вкладке мессенджера">↗</button>
     <button class="icon-btn" id="vh-close" title="Убрать из избранного">✕</button>`
   const b = head.querySelector('.svc-badge')
@@ -1488,6 +1529,12 @@ function renderViewHead(p, svc) {
   ttl.title = p.url
   ttl.onclick = () => openInServiceTab(p)
   head.querySelector('.view-svc').textContent = svc.name
+  const returnBtn = head.querySelector('#vh-return')
+  returnBtn.onclick = async () => {
+    if (returnBtn.disabled) return
+    returnBtn.disabled = true
+    try { await returnPinToOrigin(p) } finally { returnBtn.disabled = false }
+  }
   head.querySelector('#vh-open').onclick = () => openInServiceTab(p)
   head.querySelector('#vh-close').onclick = () => removePin(p.id)
 }
@@ -1534,7 +1581,65 @@ function openInServiceTab(p) {
   if (wv.getURL() && wv.getURL() !== 'about:blank') { go(); return }
   wv.addEventListener('dom-ready', go, { once: true })
 }
-
+function sameViewUrl(current, target) {
+  try { return new URL(String(current)).href === new URL(String(target)).href } catch {
+    return String(current || '') === String(target || '')
+  }
+}
+function waitForViewReload(wv, start, expectedUrl) {
+  const begin = typeof start === 'function' ? start : () => wv.reload()
+  return new Promise(resolve => {
+    let settled = false
+    let timer = null
+    const done = ok => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { wv.removeEventListener('did-finish-load', finish) } catch {}
+      try { wv.removeEventListener('did-fail-load', fail) } catch {}
+      try { wv.removeEventListener('did-navigate-in-page', inPage) } catch {}
+      resolve(ok)
+    }
+    const finish = event => { if (event?.isMainFrame !== false) done(true) }
+    const fail = event => { if (event?.isMainFrame !== false) done(false) }
+    const inPage = event => {
+      if (!expectedUrl || event?.isMainFrame === false) return
+      let navigated = event?.url
+      if (!navigated && typeof wv.getURL === 'function') navigated = wv.getURL()
+      if (sameViewUrl(navigated, expectedUrl)) done(true)
+    }
+    try {
+      if (typeof wv.addEventListener !== 'function' || typeof wv.removeEventListener !== 'function') return done(false)
+      wv.addEventListener('did-finish-load', finish)
+      wv.addEventListener('did-fail-load', fail)
+      wv.addEventListener('did-navigate-in-page', inPage)
+      timer = setTimeout(() => done(false), 15000)
+      const pending = begin()
+      if (pending && typeof pending.then === 'function') Promise.resolve(pending).catch(() => done(false))
+    } catch { done(false) }
+  })
+}
+async function reloadOriginalView(wv, url) {
+  if (!wv || !url) return false
+  try {
+    const target = String(url)
+    const current = typeof wv.getURL === 'function' ? wv.getURL() : ''
+    if (sameViewUrl(current, target) && typeof wv.reload === 'function') {
+      return await waitForViewReload(wv)
+    }
+    return await waitForViewReload(wv, () => wv.loadURL(target), target)
+  } catch { return false }
+}
+async function returnServiceToOrigin(svc) {
+  const ok = await reloadOriginalView(state.svcViews[svc.id], svc.url)
+  toast(ok ? 'Открыта исходная страница сервиса' : 'Не удалось открыть исходную страницу сервиса')
+  return ok
+}
+async function returnPinToOrigin(p) {
+  const ok = await reloadOriginalView(state.pinViews[p.id], p.url)
+  toast(ok ? 'Открыта исходная страница чата' : 'Не удалось открыть исходную страницу чата')
+  return ok
+}
 /* ---------- избранное на вкладке мессенджера ---------- */
 
 // Совпадает ли запись избранного с чатом: mm — по slug канала, tg — по hash, max/ydx — по названию
@@ -1983,12 +2088,11 @@ async function tgSearchResolve(favs) {
   const uniqueRows = Array.from(byPid.values())
   const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
   const parseN = s => {
-    const m = String(s || '').trim().match(/^([\d.,]+)\s*([KКМM]?)/i)
-    if (!m) return 0
-    let n = parseFloat(m[1].replace(',', '.'))
-    if (/^[KК]$/i.test(m[2])) n *= 1000
-    if (/^[МM]$/i.test(m[2])) n *= 1000000
-    return Math.round(n)
+    const raw = String(s || '').trim().replace(/^@/, '')
+    if (!raw) return 0
+    if (!/^\d+$/.test(raw)) return null
+    const n = Number(raw)
+    return Number.isSafeInteger(n) && n >= 0 ? n : null
   }
   const out = []
   for (const f of favs) {
@@ -2021,9 +2125,10 @@ async function tgSearchResolve(favs) {
     }
     if (!row) continue
     const count = parseN(row.unreadTxt)
+    if (count === null) continue
     out.push({
       id: f.id,
-      unread: count > 0 || !!row.unreadTitle,
+      unread: count > 0 || !!row.unreadTitle || !!row.mentions,
       count: count,
       mentions: row.mentions ? (count || 1) : 0,
       rank: 9999, // позиция в поиске ≠ позиция в списке мессенджера
@@ -2409,7 +2514,7 @@ async function pollUnreadService(svc, job) {
         if (mp) { rawC = mp.count || 0; rawM = mp.mentions || 0 }
         r.count = rawC
         r.mentions = rawM
-        if (rawC > 0 || rawM > 0) r.unread = true
+        r.unread = rawC > 0 || rawM > 0
       }
       let dC = 0, dM = 0, dU = false
       const row = document.querySelector('.chat-row[data-pin="' + r.id + '"]')
@@ -2562,18 +2667,26 @@ async function pollUnreadService(svc, job) {
         state.prevUnread[r.id] = total
       }
     }
+    const tabTotal = svc.id === 'mm' ? null : tabBadgeTotal(res)
     if (svc.id === 'mm') {
       // бейдж вкладки MM — из API (mmTabCounts): два чипа «всего/@упоминаний»;
       // сайдбарные суммы здесь не трогаем (rows уже обновлены выше)
-    } else if (res.svcTotals) {
-      // п.20: два чипа на вкладке — суммы по ВСЕМУ списку мессенджера;
-      // запоминаем для агрегата «★ Сборной»
+    } else if (tabTotal) {
+      // Точный итог отдаётся целиком. Для виртуализированного списка есть
+      // только наблюдаемая часть, поэтому показываем нижнюю границу «N+».
       state.svcTabTotals = state.svcTabTotals || {}
-      // нормализуем ключи к {t, m} — как у mmTabCounts (агрегат «Сборной» читает t/m)
-      state.svcTabTotals[svc.id] = { t: res.svcTotals.total || 0, m: res.svcTotals.mentions || 0 }
-      updateBadge2(svc.id, res.svcTotals.total || 0, res.svcTotals.mentions || 0)
+      const cachedTabTotal = state.svcTabTotals[svc.id]
+      if (!tabTotal.partial || !cachedTabTotal || cachedTabTotal.partial === true) {
+        state.svcTabTotals[svc.id] = tabTotal
+        updateBadge2(svc.id, tabTotal.t, tabTotal.m, tabTotal.partial)
+      }
     } else if (res.coverage && res.coverage.complete === false) {
-      // A partial virtual window cannot replace a cached whole-service count.
+      // Нулевой частичный снимок не доказывает ноль по всему сервису, но
+      // предыдущую нижнюю границу тоже нельзя оставлять как актуальную.
+      if (state.svcTabTotals?.[svc.id]?.partial === true) {
+        delete state.svcTabTotals[svc.id]
+        updateBadge2(svc.id, 0, 0)
+      }
     } else if (mentions > 0) updateBadge(svc.id, '@' + mentions, true)
     else if (countSum > 0) updateBadge(svc.id, String(countSum), false)
     else if (unreadChats > 0) updateBadge(svc.id, String(unreadChats), false)
@@ -3540,21 +3653,31 @@ async function __chatHubTgUnread(favs, allowScroll) {
       finally { clearTimeout(timer); queue.length = 0 }
     }
   }
-  const parseN = s => {
-    const m = String(s || '').trim().match(/^([\d.,]+)\s*([KКММ]?)/i)
-    if (!m) return 0
-    let n = parseFloat(m[1].replace(',', '.'))
-    if (/^[KК]$/i.test(m[2])) n *= 1000
-    if (/^[МM]$/i.test(m[2])) n *= 1000000
-    return Math.round(n)
+  const badgeObservation = s => {
+    const text = String(s || '').trim()
+    if (!text) return { known: true, count: 0, numeric: false, unreadMarker: false, mentionMarker: false }
+    if (text === '@') return { known: true, count: 0, numeric: false, unreadMarker: true, mentionMarker: true }
+    if (/^[•●]$/.test(text)) return { known: true, count: 0, numeric: false, unreadMarker: true, mentionMarker: false }
+    const raw = text.replace(/^@/, '')
+    if (!/^\d+$/.test(raw)) return { known: false, count: 0, numeric: false, unreadMarker: false, mentionMarker: false }
+    const count = Number(raw)
+    if (!Number.isSafeInteger(count) || count < 0) return { known: false, count: 0, numeric: false, unreadMarker: false, mentionMarker: false }
+    return { known: true, count, numeric: true, unreadMarker: false, mentionMarker: false }
   }
   const sleep = ms => new Promise(r => setTimeout(r, ms))
   const collect = () => {
     const list = []
+    const peers = new Map()
     // только реальные строки диалогов (a[href^="#"]); служебные строки —
     // archive-dialog, предложения подарков — пропускаем. Время — .message-time
     // (обёртка .dialog-time-pill есть лишь у закреплённых, у остальных нет).
     document.querySelectorAll('a.row-clickable[href^="#"]').forEach((r, idx) => {
+      const rect = typeof r.getBoundingClientRect === 'function' ? r.getBoundingClientRect() : null
+      if (rect && (rect.width <= 0 || rect.height <= 0)) return
+      try {
+        const style = typeof getComputedStyle === 'function' ? getComputedStyle(r) : null
+        if (style?.display === 'none' || style?.visibility === 'hidden') return
+      } catch {}
       const t = r.querySelector('.peer-title')
       if (!t) return
       const pid = r.getAttribute('data-peer-id') || t.getAttribute('data-peer-id') || ''
@@ -3562,11 +3685,12 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (!pid || !title) return
       const tp = r.querySelector('.message-time')
       const bd = r.querySelector('.dialog-subtitle-badge-unread')
+      const badge = badgeObservation(bd ? bd.textContent : '')
       let mentions = 0
       if (bd) {
         const rgb = (getComputedStyle(bd).backgroundColor.match(/\d+/g) || []).map(Number)
         if (String(bd.className).indexOf('danger') >= 0 || (rgb.length > 2 && rgb[0] > 170 && rgb[1] < 110)) {
-          mentions = parseN(bd.textContent) || 1
+          if (badge.known && (badge.count > 0 || badge.mentionMarker)) mentions = badge.count || 1
         }
       }
       const pinnedRow = favs.some(f => {
@@ -3581,12 +3705,16 @@ async function __chatHubTgUnread(favs, allowScroll) {
       if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
       // Missing sender metadata remains unknown; a chat title is not evidence.
       if (/^you:\s*/i.test(preview)) preview = 'Вы: ' + preview.replace(/^you:\s*/i, '')
-      list.push({
+      const observation = {
         pid: pid,
         u: r.getAttribute('href') || '',
         title: title,
         time: tp ? tp.textContent.trim() : '',
         unreadTxt: bd ? bd.textContent.trim() : '',
+        badgeKnown: badge.known,
+        badgeCount: badge.count,
+        badgeNumeric: badge.numeric,
+        badgeMarker: badge.unreadMarker,
         mentions: mentions,
         unreadTitle: /unreadPeerTitle/.test(String(t.className)),
         preview: preview,
@@ -3597,12 +3725,22 @@ async function __chatHubTgUnread(favs, allowScroll) {
           if (t?.cloneNode && shell.appendChild) shell.appendChild(t.cloneNode(true))
           return shell
         })() : null
-      })
+      }
+      const prior = peers.get(pid)
+      if (prior) {
+        if (prior.unreadTxt !== observation.unreadTxt || prior.mentions !== observation.mentions || prior.unreadTitle !== observation.unreadTitle) prior.ambiguous = true
+        return
+      }
+      peers.set(pid, observation)
+      list.push(observation)
     })
-    return list
+    return list.filter(row => !row.ambiguous)
   }
   const avatarBudget = { attempts: 0 }
   const supH = (() => { const s = document.querySelector('.search-super'); return s ? s.getBoundingClientRect().height : 0 })()
+  // A lower-bound badge must come from one visible snapshot, not merged
+  // virtual windows whose rows may have been recycled during the sweep.
+  const observedRows = collect()
   const rows = await __chatHubScanRows(() => collect().map(r => ({ ...r, key: r.pid })), '.chatlist-parts', 'tg',
     allowScroll && !favs.some(f => f.needDialogMetadata === true && /^https:\/\/web\.telegram\.org\/k\/#(?:@[A-Za-z0-9_]+|[1-9]\d*)$/.test(f.url || '')) && supH < 50 && favs.some(f => f.needAvatar || f.needUnread))
   const norm = s => String(s || '').toLowerCase().replace(/[^a-zа-яё0-9]/g, '')
@@ -3671,12 +3809,14 @@ async function __chatHubTgUnread(favs, allowScroll) {
     let found = false
     let avatar = null
     if (row) {
-      found = true
-      rank = row.idx
-      if (row.time) time = row.time
-      count = parseN(row.unreadTxt)
-      mentions = row.mentions
-      if (count > 0 || row.unreadTitle) unread = true
+      if (row.badgeKnown) {
+        found = true
+        rank = row.idx
+        if (row.time) time = row.time
+        count = row.badgeCount
+        mentions = row.mentions
+        unread = count > 0 || mentions > 0 || (!row.badgeNumeric && (row.unreadTitle || row.badgeMarker))
+      }
       // аватар только при точном совпадении строки: нечёткий матч давал
       // чужое фото (два чата одного человека получали одну аватарку)
       const identityChanged = typeof f.identityKey === 'string' && identity && f.identityKey !== `${identity.accountId}:${identity.username}:${identity.peerId}`
@@ -3775,8 +3915,9 @@ async function __chatHubTgUnread(favs, allowScroll) {
   // (красный бейдж webk — упоминание/личное, как в строках избранного)
   let svcTotal = 0
   let svcMentions = 0
-  for (const r of rows) {
-    svcTotal += parseN(String(r.unreadTxt || '').replace(/^@/, ''))
+  for (const r of observedRows) {
+    if (!r.badgeKnown) continue
+    svcTotal += r.badgeCount
     svcMentions += r.mentions || 0
   }
   return JSON.stringify({ favs: out, svcTotals: null, observedTotals: { total: svcTotal, mentions: svcMentions }, coverage: { complete: false } })
@@ -3863,15 +4004,33 @@ async function __chatHubMaxUnread(favs, allowScroll) {
   // MAX currently exposes only a virtual data-index, not immutable chat ID.
   // Keep no-href coverage until a verified adapter exists, but do not collapse
   // duplicate titles before checking ambiguity (see docs/max-telemost-identities.md).
+  const visible = row => {
+    const rect = typeof row.getBoundingClientRect === 'function' ? row.getBoundingClientRect() : null
+    if (rect && (rect.width <= 0 || rect.height <= 0)) return false
+    try {
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(row) : null
+      return style?.display !== 'none' && style?.visibility !== 'hidden'
+    } catch { return true }
+  }
+  const rowTokens = new WeakMap()
+  let nextRowToken = 0
   const collect = () => {
-    const occurrences = new Map()
-    return Array.from(document.querySelectorAll('aside div.item')).map((r, i) => {
-      const name = (r.querySelector('span.name') || r.querySelector('h3.title'))?.textContent.trim() || 'row:' + i
-      const occurrence = occurrences.get(name) || 0
-      occurrences.set(name, occurrence + 1)
-      return { key: name + ':' + occurrence, el: r.cloneNode(true) }
+    return Array.from(document.querySelectorAll('aside div.item')).filter(visible).map(r => {
+      const name = (r.querySelector('span.name') || r.querySelector('h3.title'))?.textContent.trim() || ''
+      let token = rowTokens.get(r)
+      if (!token) { token = ++nextRowToken; rowTokens.set(r, token) }
+      const preview = String(r.querySelector('span.text.svelte-q2jdqb')?.textContent || '').trim()
+      const time = String(r.querySelector('.meta')?.textContent || '').trim()
+      const indicator = Array.from(r.querySelectorAll('.indicator')).map(x => String(x.textContent || '').trim()).join('\u0001')
+      // A virtual DOM element may be recycled for a different row. Keep an
+      // unchanged physical observation stable, but retain a new element or
+      // changed row signature as a separate candidate so ambiguity survives.
+      return { key: 'max:' + token + '\u0000' + [name, preview, time, indicator].join('\u0001'), el: r.cloneNode(true) }
     })
   }
+  // The tab badge is a lower bound from one simultaneous DOM snapshot. MAX
+  // has no immutable row ID, so virtual recycled rows cannot be aggregated.
+  const observedCandidates = collect().map(r => r.el)
   const items = (await __chatHubScanRows(collect, '.scrollable.scrollListScrollable', 'max',
     allowScroll && favs.some(f => f.needAvatar || f.needUnread))).map(r => r.el)
   const out = []
@@ -3879,15 +4038,30 @@ async function __chatHubMaxUnread(favs, allowScroll) {
     const el = item.querySelector('span.name') || item.querySelector('h3.title')
     return el ? el.textContent.trim() : ''
   }
-  // Только контейнер бейджа: числовое превью/название не является счётчиком.
-  // Читаем один раз, даже если внутри indicator несколько вложенных span.
+  // Only a plain safe integer proves an exact unread count. A rounded or
+  // otherwise malformed indicator is an unknown observation, never read=0.
   const countOf = item => {
-    for (const badge of item.querySelectorAll('.indicator')) {
+    const badges = Array.from(item.querySelectorAll('.indicator'))
+    if (!badges.length) return 0
+    for (const badge of badges) {
       const text = String(badge.textContent || '').trim()
-      if (/^\d+$/.test(text)) return Number(text)
+      if (!text) continue
+      if (!/^\d+$/.test(text)) return null
+      const count = Number(text)
+      return Number.isSafeInteger(count) && count >= 0 ? count : null
     }
     return 0
   }
+  const observedByTitle = new Map(), ambiguousObservedTitles = new Set()
+  for (const item of observedCandidates) {
+    const title = nameOf(item), count = countOf(item)
+    if (!title) continue
+    if (count === null) { ambiguousObservedTitles.add(title); continue }
+    const prior = observedByTitle.get(title)
+    if (!prior) observedByTitle.set(title, { item, count })
+    else if (prior.count !== count) ambiguousObservedTitles.add(title)
+  }
+  const observedItems = [...observedByTitle].filter(([title]) => !ambiguousObservedTitles.has(title)).map(([, row]) => row.item)
   for (const f of favs) {
     let unread = false
     let count = 0
@@ -3897,12 +4071,13 @@ async function __chatHubMaxUnread(favs, allowScroll) {
     const candidates = items.map((item, index) => ({ item, index })).filter(r => nameOf(r.item) === String(f.title).trim())
     const duplicatePin = favs.some(other => other.id !== f.id && String(other.title).trim() === String(f.title).trim())
     const idx = !duplicatePin && candidates.length === 1 ? candidates[0].index : -1
-    if (idx >= 0) {
+    const observedCount = idx >= 0 ? countOf(items[idx]) : null
+    if (idx >= 0 && observedCount !== null) {
       rank = idx
       // время последнего сообщения («17:30», «пн», «Nov 8»)
       const meta = items[idx].querySelector('.meta')
       if (meta) time = meta.textContent.trim()
-      count = countOf(items[idx])
+      count = observedCount
       unread = count > 0
       if (f.needAvatar) avatar = await __chatHubBoundedAvatar(items[idx], avatarBudget)
     }
@@ -3914,12 +4089,15 @@ async function __chatHubMaxUnread(favs, allowScroll) {
     // автор вшит в начало текста. Формируем единое «Автор: текст».
     const authorEl = idx >= 0 ? items[idx].querySelector('span.author') : null
     preview = formatMaxPreview(preview, authorEl ? authorEl.textContent : '')
-    out.push({ id: f.id, found: idx >= 0, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: preview.slice(0, 110) })
+    out.push({ id: f.id, found: idx >= 0 && observedCount !== null, unread: unread, count: count, mentions: 0, rank: rank, time: time, avatar: avatar, preview: preview.slice(0, 110) })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку MAX — на вкладку.
   // Маркеров упоминаний список MAX не показывает — только общее число.
   let svcTotal = 0
-  for (const it of items) svcTotal += countOf(it)
+  for (const it of observedItems) {
+    const count = countOf(it)
+    if (count !== null) svcTotal += count
+  }
   return JSON.stringify({ favs: out, svcTotals: null, observedTotals: { total: svcTotal, mentions: 0 }, coverage: { complete: false } })
 }
 
@@ -3996,15 +4174,47 @@ async function __chatHubYdxUnread(favs, allowScroll) {
       return new RegExp('^' + uuid + '$').test(id) ? { kind: 'user', id } : null
     } catch { return null }
   }
+  const visible = row => {
+    const rect = typeof row.getBoundingClientRect === 'function' ? row.getBoundingClientRect() : null
+    if (rect && (rect.width <= 0 || rect.height <= 0)) return false
+    try {
+      const style = typeof getComputedStyle === 'function' ? getComputedStyle(row) : null
+      return style?.display !== 'none' && style?.visibility !== 'hidden'
+    } catch { return true }
+  }
   const collect = () => {
     const occurrences = new Map()
-    return Array.from(document.querySelectorAll('.yamb-chat-list-item')).map((r, i) => {
+    return Array.from(document.querySelectorAll('.yamb-chat-list-item')).filter(visible).map((r, i) => {
       const chatId = rowId(r), base = chatId || 'unknown:' + i
       const occurrence = occurrences.get(base) || 0
       occurrences.set(base, occurrence + 1)
       return { key: base + ':' + occurrence, chatId, messageTime: rowTime(r, chatId), el: r.cloneNode(true) }
     })
   }
+  const badgeObservation = item => {
+    const badge = item?.querySelector('.yamb-chat-list-item__badges')
+    const raw = String(badge?.textContent || '').trim()
+    if (!raw) return { known: true, count: 0, unread: false }
+    if (/^[•●]$/.test(raw)) return { known: true, count: 0, unread: true }
+    if (!/^\d+$/.test(raw)) return { known: false, count: 0, unread: false }
+    const count = Number(raw)
+    if (!Number.isSafeInteger(count) || count < 0) return { known: false, count: 0, unread: false }
+    return { known: true, count, unread: count > 0 }
+  }
+  // The lower-bound badge reflects one current snapshot; a virtual scan may
+  // recycle rows before a later chunk is collected. A repeated or unknown
+  // chatId cannot contribute twice to a trustworthy lower bound. Conflicting
+  // duplicates are omitted rather than trusting DOM order.
+  const observedById = new Map(), ambiguousObservedIds = new Set()
+  for (const row of collect()) {
+    if (!row.chatId) continue
+    const observation = badgeObservation(row.el)
+    if (!observation.known) { ambiguousObservedIds.add(row.chatId); continue }
+    const prior = observedById.get(row.chatId)
+    if (!prior) observedById.set(row.chatId, { row, count: observation.count })
+    else if (prior.count !== observation.count) ambiguousObservedIds.add(row.chatId)
+  }
+  const observedRows = [...observedById].filter(([chatId]) => !ambiguousObservedIds.has(chatId)).map(([, value]) => value.row)
   const rows = await __chatHubScanRows(collect, '.ui-scroller.ui-virtual-list__scroller', 'ydx',
     allowScroll && favs.some(f => f.needAvatar || f.needUnread))
   const items = rows.map(r => r.el)
@@ -4020,32 +4230,23 @@ async function __chatHubYdxUnread(favs, allowScroll) {
       identity.kind === 'chats' ? r.chatId === identity.id :
         r.chatId.includes('_') && r.chatId.split('_').includes(identity.id)) : []
     const idx = candidates.length === 1 ? candidates[0].index : -1
-    if (idx >= 0) {
+    const observation = idx >= 0 ? badgeObservation(items[idx]) : null
+    if (idx >= 0 && observation?.known) {
       rank = idx
       // Displayed date may be a draft timestamp; never promote it to activity.
-      const badges = items[idx].querySelector('.yamb-chat-list-item__badges')
-      if (badges) {
-        const txt = (badges.textContent || '').trim()
-        if (txt) {
-          const n = parseInt(txt.replace(/\D+/g, ''), 10)
-          if (n > 0) { count = n; unread = true }
-          else unread = true // нечисловой бейдж (точка/иконка «есть новое»)
-        }
-      }
+      count = observation.count
+      unread = observation.unread
       if (f.needAvatar) avatar = await __chatHubBoundedAvatar(items[idx], avatarBudget)
     }
     const prevEl2 = idx >= 0 ? (items[idx].querySelector('[id$="_text"]') || items[idx].querySelector('.yamb-chat-list-item__preview, .yamb-chat-list-item__last-message, .ui-entity-block-text')) : null
-    out.push({ id: f.id, found: idx >= 0, unread: unread, count: count, mentions: 0, rank: rank, time: time, messageTime: idx >= 0 && rows[idx].messageTime ? { ...rows[idx].messageTime, canonicalUrl: f.url } : null, avatar: avatar, preview: prevEl2 ? String(prevEl2.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
+    out.push({ id: f.id, found: idx >= 0 && observation?.known === true, unread: unread, count: count, mentions: 0, rank: rank, time: time, messageTime: idx >= 0 && rows[idx].messageTime ? { ...rows[idx].messageTime, canonicalUrl: f.url } : null, avatar: avatar, preview: prevEl2 ? String(prevEl2.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90) : '' })
   }
   // п.20: общая сумма непрочитанных по ВСЕМУ списку Телемоста — на вкладку.
   // Маркеров упоминаний список не показывает — только общее число.
   let svcTotal = 0
-  for (const it of items) {
-    const bb = it.querySelector('.yamb-chat-list-item__badges')
-    if (bb) {
-      const nn = parseInt((bb.textContent || '').replace(/\D+/g, ''), 10)
-      if (nn > 0) svcTotal += nn
-    }
+  for (const row of observedRows) {
+    const observation = badgeObservation(row.el)
+    if (observation.known) svcTotal += observation.count
   }
   return JSON.stringify({ favs: out, svcTotals: null, observedTotals: { total: svcTotal, mentions: 0 }, coverage: { complete: false } })
 }
@@ -4172,10 +4373,13 @@ function buildSettings(sec) {
           <summary>Как пользоваться</summary>
           <ul class="about-list">
             <li>Вкладки сверху — мессенджеры. Войти достаточно один раз (Telegram и MAX — по QR-коду).</li>
+            <li>«↻ К исходной странице» на вкладке мессенджера возвращает к его начальному адресу.
+            Если этот адрес уже открыт, страница перезагружается. Стрелка ↻ в открытом чате
+            «★ Сборной» возвращает к сохранённому адресу этого чата.</li>
             <li>«⭐ В избранное» на вкладке мессенджера добавляет открытый чат в сборную вкладку.</li>
             <li>«★ Сборная»: избранные чаты слева, переписка справа. 📌 — закрепить наверху,
             ↗ — открыть на вкладке мессенджера, ✕ — убрать из избранного.</li>
-            <li>Счётчики на вкладках: всего непрочитанных и @упоминания; на «★ Сборной» — суммы по избранным чатам.</li>
+            <li>Счётчики на вкладках: всего непрочитанных и @упоминания; на «★ Сборной» — суммы по избранным чатам. Число с «+» означает нижнюю границу: в виртуальном списке могут быть непрочитанные ниже текущей области.</li>
             <li>🔍 «Найти чат…» — поиск по избранным; список сортируется по времени последнего сообщения.</li>
             <li>В портативной сборке данные входа и настройки хранятся в папке <code>data</code> рядом с <code>ChatHub.exe</code>.</li>
           </ul>

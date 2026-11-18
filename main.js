@@ -1,6 +1,7 @@
 // ChatHub — все мессенджеры в одном окне + сборная вкладка с закреплёнными чатами
 const { app, BrowserWindow, ipcMain, session, shell, webContents, Menu, nativeTheme, dialog } = require('electron')
 const path = require('path')
+const { pathToFileURL } = require('url')
 const fs = require('fs')
 const { installGuestNotificationPolicy } = require('./guest-notification-policy')
 
@@ -235,8 +236,33 @@ function applyServiceNotificationPolicy() {
   }
 }
 
-ipcMain.handle('config:get', () => config)
-ipcMain.handle('config:save', (_e, cfg) => {
+function isShellSender(event) {
+  try {
+    const sender = event && event.sender
+    const frame = event && event.senderFrame
+    const shellUrl = pathToFileURL(path.join(__dirname, 'index.html')).href
+    return sender?.getType?.() === 'window' &&
+      sender.getURL?.() === shellUrl &&
+      sender.mainFrame === frame &&
+      frame?.url === shellUrl
+  } catch { return false }
+}
+function requireShellSender(event) {
+  if (!isShellSender(event)) throw new Error('Unauthorized IPC sender')
+}
+function allowedGuestById(wcId) {
+  if (!Number.isInteger(wcId) || wcId <= 0) return null
+  const wc = webContents.fromId(wcId)
+  if (!wc || wc.isDestroyed?.() || wc.getType?.() !== 'webview') return null
+  return isAllowedGuestUrl(wc.getURL()) ? wc : null
+}
+
+ipcMain.handle('config:get', event => {
+  requireShellSender(event)
+  return config
+})
+ipcMain.handle('config:save', (event, cfg) => {
+  requireShellSender(event)
   try { validateConfig(cfg) } catch {
     const message = 'Некорректный формат настроек; сохранение отменено.'
     reportConfigProblem(message)
@@ -250,8 +276,8 @@ ipcMain.handle('config:save', (_e, cfg) => {
   applyServiceProxies()
   return true
 })
-ipcMain.handle('config:path', () => CONFIG_PATH)
-ipcMain.handle('app:version', () => app.getVersion())
+ipcMain.handle('config:path', event => { requireShellSender(event); return CONFIG_PATH })
+ipcMain.handle('app:version', event => { requireShellSender(event); return app.getVersion() })
 // тема мессенджеров в webview: нативный prefers-color-scheme до webview НЕ
 // доезжает (Electron не наследует его внутрь <webview>), поэтому подменяем
 // media query через CDP-эмуляцию ЖИВО, без перезагрузки страниц. Телемост
@@ -274,7 +300,8 @@ app.on('web-contents-created', (_e, wc) => {
   // каждая новая webview (вкладка сервиса / пин) сразу получает тему
   wc.once('dom-ready', () => applyThemeToWC(wc, config.theme === 'light' ? 'light' : 'dark'))
 })
-ipcMain.handle('theme:set-source', (_e, src) => {
+ipcMain.handle('theme:set-source', (event, src) => {
+  requireShellSender(event)
   if (src === 'light') config.theme = 'light'
   else if (src === 'dark') config.theme = 'dark'
   try { nativeTheme.themeSource = src === 'light' ? 'light' : 'dark' } catch {}
@@ -284,7 +311,10 @@ ipcMain.handle('theme:set-source', (_e, src) => {
 // настоящий фокус ОКНА приложения: document.hasFocus() в рендерере врёт,
 // когда фокус уходит внутрь webview (клик в чат мессенджера), из-за чего
 // фоновые проходы печатали в поиск Telegram при живом пользователе
-ipcMain.handle('win:focused', () => BrowserWindow.getAllWindows().some(w => w.isFocused()))
+ipcMain.handle('win:focused', event => {
+  requireShellSender(event)
+  return BrowserWindow.getAllWindows().some(w => w.isFocused())
+})
 
 // Доверенный ввод в webview. webk Telegram игнорирует синтетические JS-события,
 // а webContents.insertText на скрытой вьюхе теряется. Работает только ввод
@@ -299,9 +329,11 @@ async function dbg(wc) {
 // пользователь вернулся. Блокируем на самом низком уровне — до любого ввода.
 const userAtApp = () => BrowserWindow.getAllWindows().some(w => w.isFocused())
 
-ipcMain.handle('input:click', async (_e, { wcId, x, y }) => {
+ipcMain.handle('input:click', async (event, { wcId, x, y } = {}) => {
+  requireShellSender(event)
   if (userAtApp()) return 'blocked-focus'
-  const wc = webContents.fromId(wcId)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false
+  const wc = allowedGuestById(wcId)
   if (!wc) return false
   try {
     const d = await dbg(wc)
@@ -310,9 +342,11 @@ ipcMain.handle('input:click', async (_e, { wcId, x, y }) => {
     return true
   } catch { return false }
 })
-ipcMain.handle('input:text', async (_e, { wcId, text }) => {
+ipcMain.handle('input:text', async (event, { wcId, text } = {}) => {
+  requireShellSender(event)
   if (userAtApp()) return 'blocked-focus'
-  const wc = webContents.fromId(wcId)
+  if (typeof text !== 'string' || text.length > 512) return false
+  const wc = allowedGuestById(wcId)
   if (!wc) return false
   try {
     const d = await dbg(wc)
@@ -320,9 +354,12 @@ ipcMain.handle('input:text', async (_e, { wcId, text }) => {
     return true
   } catch { return false }
 })
-ipcMain.handle('input:key', async (_e, { wcId, key, keyCode, modifiers }) => {
+ipcMain.handle('input:key', async (event, { wcId, key, keyCode, modifiers = [] } = {}) => {
+  requireShellSender(event)
   if (userAtApp()) return 'blocked-focus'
-  const wc = webContents.fromId(wcId)
+  if (typeof key !== 'string' || key.length > 32 || !Number.isInteger(keyCode) || keyCode < 0 || keyCode > 255 ||
+      !Array.isArray(modifiers) || modifiers.some(m => m !== 'control')) return false
+  const wc = allowedGuestById(wcId)
   if (!wc) return false
   try {
     const d = await dbg(wc)
@@ -337,9 +374,11 @@ ipcMain.handle('input:key', async (_e, { wcId, key, keyCode, modifiers }) => {
 // доверенный скролл (колесо) — нужен для подгрузки старых диалогов webk:
 // виртуализированный список рендерит только видимое окно, прокрутка грузит
 // следующие партии диалогов с их временами последних сообщений
-ipcMain.handle('input:wheel', async (_e, { wcId, x, y, deltaY }) => {
+ipcMain.handle('input:wheel', async (event, { wcId, x, y, deltaY } = {}) => {
+  requireShellSender(event)
   if (userAtApp()) return 'blocked-focus'
-  const wc = webContents.fromId(wcId)
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(deltaY) || Math.abs(deltaY) > 5000) return false
+  const wc = allowedGuestById(wcId)
   if (!wc) return false
   try {
     const d = await dbg(wc)
@@ -347,6 +386,23 @@ ipcMain.handle('input:wheel', async (_e, { wcId, x, y, deltaY }) => {
     return true
   } catch { return false }
 })
+
+const shellContents = new WeakSet()
+const shellDocumentUrl = pathToFileURL(path.join(__dirname, 'index.html')).href
+function isShellDocumentUrl(raw) {
+  try { return new URL(raw).href === shellDocumentUrl } catch { return false }
+}
+function isConfiguredGuestAttachment(params) {
+  const src = String(params?.src || 'about:blank')
+  const partition = String(params?.partition || '')
+  const service = (config.services || []).find(svc => svc.partition === partition)
+  if (!service) return false
+  if (src === 'about:blank') return true
+  try {
+    const target = new URL(src), base = new URL(service.url)
+    return target.protocol === 'https:' && base.protocol === 'https:' && target.origin === base.origin
+  } catch { return false }
+}
 
 function createWindow() {
   // webk (Telegram) прячет список диалогов при viewport < ~1320px, поэтому
@@ -367,6 +423,7 @@ function createWindow() {
       webviewTag: true
     }
   })
+  shellContents.add(win.webContents)
   // Windows taskbar overlays belong to a window, not app.setBadgeCount().
   // Clear a stale overlay left from an earlier notification at each launch.
   if (process.platform === 'win32' && typeof win.setOverlayIcon === 'function') {
@@ -409,39 +466,192 @@ function createWindow() {
 // browser instead of reusing the messenger's Electron guest.
 const SERVICE_HOSTS = ['im.astralinux.ru', 'web.telegram.org', 'web.max.ru', 'telemost.yandex.ru']
 const AUTH_HOSTS = ['passport.yandex.ru', 'passport.yandex.com', 'accounts.google.com', 'login.microsoftonline.com', 'oauth.telegram.org', 'connect.login.ru', 'login.max.ru']
+function isConfiguredServiceUrl(raw) {
+  try {
+    const target = new URL(raw)
+    if (target.protocol !== 'https:') return false
+    return (config.services || []).some(svc => {
+      try {
+        const base = new URL(svc.url)
+        return base.protocol === 'https:' && base.origin === target.origin
+      } catch { return false }
+    })
+  } catch { return false }
+}
+function isAuthUrl(raw) {
+  try {
+    const target = new URL(raw)
+    return target.protocol === 'https:' && AUTH_HOSTS.includes(target.hostname)
+  } catch { return false }
+}
+function isAllowedGuestUrl(raw) {
+  return isConfiguredServiceUrl(raw) || isAuthUrl(raw)
+}
+const guestAuthOrigins = new WeakMap()
+const guestPendingServiceOrigins = new WeakMap()
+function rememberConfiguredServiceNavigation(contents, raw) {
+  try {
+    const target = new URL(raw)
+    if (!isConfiguredServiceUrl(target.toString())) return false
+    guestPendingServiceOrigins.set(contents, { origin: target.origin, expiresAt: Date.now() + 60 * 1000 })
+    return true
+  } catch { return false }
+}
+function hasPendingConfiguredServiceNavigation(contents) {
+  const state = guestPendingServiceOrigins.get(contents)
+  if (!state || state.expiresAt < Date.now()) {
+    guestPendingServiceOrigins.delete(contents)
+    return false
+  }
+  return true
+}
+function temporaryAuthState(contents, create = false) {
+  let state = guestAuthOrigins.get(contents)
+  if (state && state.expiresAt < Date.now()) {
+    guestAuthOrigins.delete(contents)
+    state = null
+  }
+  if (!state && create) {
+    state = { expiresAt: 0, origins: new Set() }
+    guestAuthOrigins.set(contents, state)
+  }
+  return state
+}
+function isTemporaryAuthUrl(contents, raw) {
+  try {
+    const target = new URL(raw)
+    const state = temporaryAuthState(contents)
+    return target.protocol === 'https:' && !!state?.origins.has(target.origin)
+  } catch { return false }
+}
+function grantRedirectedAuthOrigin(contents, raw) {
+  try {
+    const target = new URL(raw)
+    if (target.protocol !== 'https:') return false
+    const current = contents.getURL()
+    // A custom identity provider is never admitted automatically and cannot
+    // chain arbitrary origins. It must be granted explicitly from the
+    // configured messenger page, then stays scoped to this one guest view.
+    if (!isConfiguredServiceUrl(current) && !hasPendingConfiguredServiceNavigation(contents)) return false
+    const state = temporaryAuthState(contents, true)
+    if (state.origins.size && !state.origins.has(target.origin)) return false
+    state.expiresAt = Date.now() + 10 * 60 * 1000
+    state.origins.add(target.origin)
+    return true
+  } catch { return false }
+}
+function requestRedirectedAuthOrigin(contents, raw) {
+  let target
+  try {
+    target = new URL(raw)
+    if (target.protocol !== 'https:' || (!isConfiguredServiceUrl(contents.getURL()) && !hasPendingConfiguredServiceNavigation(contents))) return
+  } catch { return }
+  Promise.resolve(dialog.showMessageBox({
+    type: 'question',
+    buttons: ['Открыть для входа', 'Отмена'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+    message: 'Переход для входа',
+    detail: 'Мессенджер перенаправляет на ' + target.origin + '. Открыть эту страницу в ChatHub?'
+  })).then(result => {
+    if (result?.response !== 0 || !grantRedirectedAuthOrigin(contents, target.toString())) return
+    try {
+      const pending = contents.loadURL(target.toString())
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+    } catch {}
+  }).catch(() => {})
+}
+function isPermittedGuestUrl(contents, raw) {
+  return isAllowedGuestUrl(raw) || isTemporaryAuthUrl(contents, raw)
+}
 // журнал решений по window.open — чтобы понять, откуда берутся лишние окна
 // (жалоба: «Яндекс Телемост опять открылся отдельным окном»)
 const OPEN_LOG = path.join(app.getPath('userData'), 'window-open.log')
-function logOpen(line) {
-  try { fs.appendFileSync(OPEN_LOG, '[' + new Date().toISOString() + '] ' + line + '\n') } catch (e) {}
+function safeOrigin(raw) {
+  try { return new URL(raw).origin } catch { return '' }
+}
+function logOpen(kind, targetUrl, sourceUrl) {
+  try {
+    const target = safeOrigin(targetUrl)
+    const source = safeOrigin(sourceUrl)
+    const line = String(kind || '') + (target ? ' ' + target : '') + (source ? ' <- ' + source : '')
+    fs.appendFileSync(OPEN_LOG, '[' + new Date().toISOString() + '] ' + line + '\n')
+  } catch (e) {}
 }
 app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (event, webPreferences, params) => {
+    const partition = String(params?.partition || '')
+    const service = (config.services || []).find(svc => svc.partition === partition)
+    if (!shellContents.has(contents) || !service || !isConfiguredGuestAttachment(params)) {
+      event.preventDefault()
+      return
+    }
+    delete webPreferences.preload
+    webPreferences.partition = service.partition
+    webPreferences.nodeIntegration = false
+    webPreferences.nodeIntegrationInWorker = false
+    webPreferences.contextIsolation = true
+    webPreferences.sandbox = true
+    webPreferences.webSecurity = true
+    webPreferences.allowRunningInsecureContent = false
+  })
+  contents.on('will-navigate', (event, url, _inPlace, isMainFrame) => {
+    if (isMainFrame === false) return
+    if (shellContents.has(contents) && contents.getType?.() === 'window') {
+      if (!isShellDocumentUrl(url)) { try { event.preventDefault() } catch {} }
+      return
+    }
+    if (contents.getType?.() !== 'webview' || isPermittedGuestUrl(contents, url)) return
+    try { event.preventDefault() } catch {}
+    try {
+      const target = new URL(url)
+      if (target.protocol === 'https:') shell.openExternal(target.toString())
+    } catch {}
+  })
+  contents.on('did-start-navigation', (_event, url, _inPlace, isMainFrame) => {
+    if (contents.getType?.() === 'webview' && isMainFrame !== false) rememberConfiguredServiceNavigation(contents, url)
+  })
+  contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => {
+    if (isMainFrame === false) return
+    if (shellContents.has(contents) && contents.getType?.() === 'window') {
+      if (!isShellDocumentUrl(url)) { try { event.preventDefault() } catch {} }
+      return
+    }
+    if (contents.getType?.() !== 'webview' || isPermittedGuestUrl(contents, url)) return
+    try { event.preventDefault() } catch {}
+    requestRedirectedAuthOrigin(contents, url)
+  })
+  contents.on('did-navigate', (_event, url, _inPlace, isMainFrame) => {
+    if (contents.getType?.() === 'webview' && isMainFrame !== false && isConfiguredServiceUrl(url)) {
+      guestAuthOrigins.delete(contents)
+      guestPendingServiceOrigins.delete(contents)
+    }
+  })
   contents.setWindowOpenHandler(({ url }) => {
     let from = ''
     try { from = contents.getURL() } catch (e) {}
     try {
-      const host = new URL(url).hostname
-      const hit = hosts => hosts.some(h => host === h || host.endsWith('.' + h))
-      if (hit(SERVICE_HOSTS)) {
+      if (isConfiguredServiceUrl(url)) {
         // открываем в том же webview, отдельное окно не создаём
-        logOpen('in-view  ' + url + '  <- ' + from)
+        logOpen('in-view', url, from)
         setImmediate(() => { try { contents.loadURL(url) } catch (e) {} })
         return { action: 'deny' }
       }
-      if (hit(AUTH_HOSTS)) {
-        logOpen('popup    ' + url + '  <- ' + from)
+      if (isAuthUrl(url)) {
+        logOpen('popup', url, from)
         return {
           action: 'allow',
           overrideBrowserWindowOptions: { autoHideMenuBar: true, backgroundColor: '#1e1f22' }
         }
       }
       if (/^https?:/i.test(url)) {
-        logOpen('browser  ' + url + '  <- ' + from)
+        logOpen('browser', url, from)
         shell.openExternal(url)
       } else {
-        logOpen('deny     ' + url + '  <- ' + from)
+        logOpen('deny', url, from)
       }
-    } catch (e) { logOpen('error    ' + url + '  <- ' + from + '  ' + (e && e.message)) }
+    } catch (e) { logOpen('error', url, from) }
     return { action: 'deny' }
   })
 })
@@ -454,6 +664,12 @@ app.on('browser-window-created', (_e, win) => {
   // An auth window owns its callback for its entire lifetime. Subframes
   // cannot classify (or destroy) the containing native window.
   let authFlow = false
+  const allowedAuthPopupUrl = url => isAuthUrl(url) || isConfiguredServiceUrl(url)
+  const blockForeignAuthPopupNavigation = (url, event) => {
+    if (!authFlow || allowedAuthPopupUrl(url)) return false
+    try { if (event && typeof event.preventDefault === 'function') event.preventDefault() } catch {}
+    return true
+  }
   const inspectMainFrame = (url, event) => {
     try {
       const parsed = new URL(url || '')
@@ -462,7 +678,7 @@ app.on('browser-window-created', (_e, win) => {
       if (AUTH_HOSTS.includes(host)) authFlow = true
       if (!authFlow && /(^|\.)telemost\.yandex\.ru$/i.test(host)) {
         // Never persist OAuth codes, query strings or chat identifiers.
-        logOpen('block-telemost-window ' + parsed.origin)
+        logOpen('block-telemost-window', parsed.origin)
         try { if (event && typeof event.preventDefault === 'function') event.preventDefault() } catch (e) {}
         try { win.destroy() } catch (e) {}
       }
@@ -474,12 +690,20 @@ app.on('browser-window-created', (_e, win) => {
   // Recheck once on the next turn so such a direct Telemost window cannot stay.
   setImmediate(() => inspectMainFrame(wc.getURL()))
   const onWillNavigate = (event, url, _inPlace, isMainFrame) => {
-    if (isMainFrame === true) inspectMainFrame(url, event)
+    if (isMainFrame !== true) return
+    inspectMainFrame(url, event)
+    blockForeignAuthPopupNavigation(url, event)
+  }
+  const onWillRedirect = (event, url, _inPlace, isMainFrame) => {
+    if (isMainFrame !== true) return
+    inspectMainFrame(url, event)
+    blockForeignAuthPopupNavigation(url, event)
   }
   const onNavigation = (_ev, url, _inPlace, isMainFrame) => {
     if (isMainFrame === true) inspectMainFrame(url)
   }
   wc.on('will-navigate', onWillNavigate)
+  wc.on('will-redirect', onWillRedirect)
   wc.on('did-start-navigation', onNavigation)
   wc.on('did-redirect-navigation', onNavigation)
 })

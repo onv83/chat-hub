@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { element, listFixture } from './synthetic-dom.mjs'
+import { element, listFixture, ydxIdentity } from './synthetic-dom.mjs'
 import './lifecycle.mjs'
 import './polling.mjs'
 import './virtualized.mjs'
@@ -59,6 +59,355 @@ test('taskbar badge mirrors unread only in favourites and clears at zero', () =>
   state.unreadDots = {}
   ctx.refreshUnreadPresentation()
   assert.deepEqual(calls, [['set', 4], ['clear']])
+})
+
+test('service favicons accept only raster data URLs and never enter an HTML sink', async () => {
+  const icon = { textContent: '', child: null, appendChild(node) { this.child = node } }
+  Object.defineProperty(icon, 'innerHTML', { set() { throw Error('HTML sink must not receive a guest favicon') } })
+  const tab = { dataset: { tab: 'svc:mm' }, querySelector(selector) { return selector === '.tab-icon' ? icon : null } }
+  const state = { cfg: { services: [{ id: 'mm', name: 'Mattermost' }] }, svcIcons: { mm: 'data:image/png;base64,AAAA' } }
+  const ctx = sandbox(['isSafeSvcIconDataUrl', 'refreshTabIcons', 'captureSvcIcon'], {
+    state,
+    document: { querySelectorAll() { return [tab] }, createElement() { return { alt: '', src: '' } } },
+    renderChatList() {}, refreshTabIcons() {}
+  })
+  ctx.refreshTabIcons()
+  assert.equal(icon.child.src, 'data:image/png;base64,AAAA')
+  state.svcIcons.mm = 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='
+  icon.child = null
+  ctx.refreshTabIcons()
+  assert.equal(icon.child, null)
+  assert.equal(icon.textContent, 'M')
+  delete state.svcIcons.mm
+  await ctx.captureSvcIcon('mm', { executeJavaScript: async () => 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' })
+  assert.equal(state.svcIcons.mm, undefined)
+})
+
+test('return-to-origin controls are shared by every messenger and pin without Telemost-only diagnostics', () => {
+  const html = readFileSync(path.join(ROOT, 'index.html'), 'utf8')
+  assert.match(SRC, /class="btn return-service"/)
+  assert.match(SRC, /id="vh-return"/)
+  assert.doesNotMatch(SRC, /ChatHubServiceHealth\.attach/)
+  assert.doesNotMatch(html, /service-health\.js/)
+})
+
+test('return-to-origin waits for a reload finish and rejects failed navigation', async () => {
+  const ctx = sandbox(['sameViewUrl', 'waitForViewReload', 'reloadOriginalView'], { URL, setTimeout, clearTimeout })
+  const origin = 'https://im.astralinux.ru/astralinux/channels/general'
+  const reloads = []
+  const reloadEvents = new Map()
+  const alreadyOpen = {
+    getURL() { return origin },
+    addEventListener(name, fn) { reloadEvents.set(name, fn) },
+    removeEventListener(name, fn) { if (reloadEvents.get(name) === fn) reloadEvents.delete(name) },
+    reload() { reloads.push('reload'); queueMicrotask(() => reloadEvents.get('did-finish-load')?.({ isMainFrame: true })) }
+  }
+  assert.equal(await ctx.reloadOriginalView(alreadyOpen, origin), true)
+  assert.deepEqual(reloads, ['reload'])
+
+  const failedEvents = new Map()
+  const failedReload = {
+    getURL() { return origin },
+    addEventListener(name, fn) { failedEvents.set(name, fn) },
+    removeEventListener(name, fn) { if (failedEvents.get(name) === fn) failedEvents.delete(name) },
+    reload() { queueMicrotask(() => failedEvents.get('did-fail-load')?.({ isMainFrame: true, errorCode: -105 })) }
+  }
+  assert.equal(await ctx.reloadOriginalView(failedReload, origin), false)
+
+  let finish
+  const navigation = new Promise(resolve => { finish = resolve })
+  const loads = [], navigationEvents = new Map()
+  const newTarget = {
+    getURL() { return 'https://im.astralinux.ru/astralinux/channels/other' },
+    addEventListener(name, fn) { navigationEvents.set(name, fn) },
+    removeEventListener(name, fn) { if (navigationEvents.get(name) === fn) navigationEvents.delete(name) },
+    loadURL(url) { loads.push(url); return navigation }
+  }
+  let settled = false
+  const pending = ctx.reloadOriginalView(newTarget, origin).then(result => { settled = true; return result })
+  await Promise.resolve()
+  assert.equal(settled, false)
+  navigationEvents.get('did-finish-load')?.({ isMainFrame: true })
+  finish()
+  assert.equal(await pending, true)
+  assert.deepEqual(loads, [origin])
+
+  let current = 'https://im.astralinux.ru/astralinux/channels/other'
+  const rejected = { getURL() { return current }, loadURL() { current = origin; return Promise.reject(new Error('blocked')) } }
+  assert.equal(await ctx.reloadOriginalView(rejected, origin), false)
+})
+
+test('return-to-origin needs a main-frame load finish and has a deadline for a new target', async () => {
+  const ctx = sandbox(['sameViewUrl', 'waitForViewReload', 'reloadOriginalView'], {
+    URL,
+    setTimeout(fn) { queueMicrotask(fn); return 1 },
+    clearTimeout() {}
+  })
+  const origin = 'https://im.astralinux.ru/astralinux/channels/general'
+  const events = new Map()
+  const stalled = {
+    getURL() { return 'https://im.astralinux.ru/astralinux/channels/other' },
+    addEventListener(name, fn) { events.set(name, fn) },
+    removeEventListener(name, fn) { if (events.get(name) === fn) events.delete(name) },
+    loadURL() { return new Promise(() => {}) }
+  }
+  const result = await Promise.race([
+    ctx.reloadOriginalView(stalled, origin),
+    new Promise(resolve => globalThis.setTimeout(() => resolve('outside-deadline'), 50))
+  ])
+  assert.equal(result, false)
+})
+
+test('return-to-origin accepts a verified main-frame hash navigation to its requested URL', async () => {
+  const ctx = sandbox(['sameViewUrl', 'waitForViewReload', 'reloadOriginalView'], {
+    URL,
+    setTimeout() { return 1 },
+    clearTimeout() {}
+  })
+  const target = 'https://web.telegram.org/k/#target'
+  let current = 'https://web.telegram.org/k/#other'
+  const events = new Map()
+  const view = {
+    getURL() { return current },
+    addEventListener(name, fn) { events.set(name, fn) },
+    removeEventListener(name, fn) { if (events.get(name) === fn) events.delete(name) },
+    loadURL(url) {
+      current = url
+      queueMicrotask(() => events.get('did-navigate-in-page')?.({ isMainFrame: true, url }))
+      return new Promise(() => {})
+    }
+  }
+  const result = await Promise.race([
+    ctx.reloadOriginalView(view, target),
+    new Promise(resolve => globalThis.setTimeout(() => resolve('outside-deadline'), 50))
+  ])
+  assert.equal(result, true)
+})
+
+test('return-to-origin actions use the saved service and pinned-chat URLs', async () => {
+  const calls = [], notices = []
+  const view = kind => {
+    const events = new Map()
+    return {
+      getURL() { return '' },
+      addEventListener(name, fn) { events.set(name, fn) },
+      removeEventListener(name, fn) { if (events.get(name) === fn) events.delete(name) },
+      loadURL(url) {
+        calls.push([kind, url])
+        queueMicrotask(() => events.get('did-finish-load')?.({ isMainFrame: true }))
+        return Promise.resolve()
+      }
+    }
+  }
+  const state = { svcViews: { mm: view('service') }, pinViews: { p1: view('pin') } }
+  const ctx = sandbox(['sameViewUrl', 'waitForViewReload', 'reloadOriginalView', 'returnServiceToOrigin', 'returnPinToOrigin'], { URL, setTimeout, clearTimeout, state, toast: message => notices.push(message) })
+  assert.equal(await ctx.returnServiceToOrigin({ id: 'mm', url: 'https://im.astralinux.ru/astralinux' }), true)
+  assert.equal(await ctx.returnPinToOrigin({ id: 'p1', url: 'https://web.telegram.org/k/#chat' }), true)
+  assert.deepEqual(calls, [['service', 'https://im.astralinux.ru/astralinux'], ['pin', 'https://web.telegram.org/k/#chat']])
+  assert.equal(notices.length, 2)
+})
+
+test('partial messenger totals are shown as lower bounds and an exact zero clears the tab', () => {
+  const classes = () => {
+    const values = new Set()
+    return { toggle(name, on) { if (on) values.add(name); else values.delete(name) }, add(name) { values.add(name) }, remove(name) { values.delete(name) }, has(name) { return values.has(name) } }
+  }
+  const mention = { textContent: '', title: '', classList: classes() }
+  const badge = { textContent: '', title: '', classList: classes(), parentElement: { querySelector() { return mention } } }
+  const ctx = sandbox(['tabBadgeTotal', 'updateBadge2'], { document: { querySelector() { return badge } } })
+  const observed = ctx.tabBadgeTotal({ observedTotals: { total: 26, mentions: 0 }, coverage: { complete: false } })
+  assert.equal(JSON.stringify(observed), JSON.stringify({ t: 26, m: 0, partial: true }))
+  assert.equal(ctx.tabBadgeTotal({ observedTotals: { total: 0, mentions: 0 }, coverage: { complete: false } }), null)
+  assert.equal(JSON.stringify(ctx.tabBadgeTotal({ svcTotals: { total: 0, mentions: 0 } })), JSON.stringify({ t: 0, m: 0, partial: false }))
+  ctx.updateBadge2('max', observed.t, observed.m, observed.partial)
+  assert.equal(badge.textContent, '26+')
+  assert.equal(badge.title, 'Не менее 26 непрочитанных')
+  ctx.updateBadge2('max', 0, 0, false)
+  assert.equal(badge.textContent, '')
+})
+
+test('MAX partial total omits ambiguous same-title virtual rows', async () => {
+  const item = (name, count) => ({
+    cloneNode() { return this },
+    querySelector(selector) {
+      if (selector === 'span.name' || selector === 'h3.title') return { textContent: name }
+      return null
+    },
+    querySelectorAll(selector) { return selector === '.indicator' ? [{ textContent: String(count) }] : [] }
+  })
+  const first = item('Одинаковое имя', 4)
+  const second = item('Одинаковое имя', 100)
+  const recycledSecond = item('Одинаковое имя', 100)
+  const ctx = sandbox(['__chatHubMaxUnread'], {
+    document: { querySelectorAll(selector) { return selector === 'aside div.item' ? [first, second] : [] } },
+    __chatHubScanRows: async collect => [...collect(), { key: 'recycled', el: recycledSecond }],
+    __chatHubBoundedAvatar: async () => null,
+    formatMaxPreview: () => ''
+  })
+  const out = JSON.parse(await ctx.__chatHubMaxUnread([], true))
+  assert.equal(out.observedTotals.total, 0)
+})
+
+test('MAX cross-window same-title rows remain ambiguous instead of overwriting the first virtual observation', async () => {
+  let phase = 0
+  const item = (count, preview) => ({
+    cloneNode() { return this },
+    getBoundingClientRect() { return { width: 120, height: 42 } },
+    querySelector(selector) {
+      if (selector === 'span.name' || selector === 'h3.title') return { textContent: 'Same title' }
+      if (selector === 'span.text.svelte-q2jdqb') return { textContent: preview }
+      return null
+    },
+    querySelectorAll(selector) { return selector === '.indicator' ? [{ textContent: String(count) }] : [] }
+  })
+  const first = item(7, 'first window'), second = item(0, 'second window')
+  const ctx = sandbox(['__chatHubMaxUnread'], {
+    document: { querySelectorAll(selector) { return selector === 'aside div.item' ? [phase ? second : first] : [] } },
+    __chatHubScanRows: async collect => {
+      const rows = new Map()
+      for (const row of collect()) rows.set(row.key, row)
+      phase = 1
+      for (const row of collect()) rows.set(row.key, row)
+      return [...rows.values()]
+    },
+    __chatHubBoundedAvatar: async () => null,
+    formatMaxPreview: () => ''
+  })
+  const out = JSON.parse(await ctx.__chatHubMaxUnread([{ id: 'same', title: 'Same title' }], true))
+  assert.equal(out.favs[0].found, false)
+})
+
+test('MAX rounded and unsafe badge labels remain unknown rather than a verified read state', async () => {
+  const run = async badge => {
+    const row = {
+      cloneNode() { return this },
+      getBoundingClientRect() { return { width: 120, height: 42 } },
+      querySelector(selector) {
+        if (selector === 'span.name' || selector === 'h3.title') return { textContent: 'MAX room' }
+        return null
+      },
+      querySelectorAll(selector) { return selector === '.indicator' ? [{ textContent: badge }] : [] }
+    }
+    const ctx = sandbox(['__chatHubMaxUnread'], {
+      document: { querySelectorAll(selector) { return selector === 'aside div.item' ? [row] : [] } },
+      __chatHubScanRows: async collect => collect(), __chatHubBoundedAvatar: async () => null, formatMaxPreview: () => ''
+    })
+    return JSON.parse(await ctx.__chatHubMaxUnread([{ id: 'max-room', title: 'MAX room' }], false))
+  }
+  for (const badge of ['1.2K', '99+', '9007199254740995']) {
+    const out = await run(badge)
+    assert.equal(out.favs[0].found, false, badge)
+    assert.equal(out.observedTotals.total, 0, badge)
+  }
+})
+
+test('Telegram lower-bound total deduplicates peers and omits rounded K badges', async () => {
+  const row = (peerId, unread) => ({
+    getAttribute(name) { return name === 'data-peer-id' ? peerId : name === 'href' ? '#' + peerId : '' },
+    getBoundingClientRect() { return { width: 120, height: 42 } },
+    querySelector(selector) {
+      if (selector === '.peer-title') return { textContent: 'Чат ' + peerId, getAttribute() { return peerId } }
+      if (selector === '.dialog-subtitle-badge-unread') return { textContent: unread, className: 'badge' }
+      return null
+    }
+  })
+  const rows = [row('1', '1.2K'), row('1', '1.2K'), row('2', '7')]
+  const document = {
+    querySelectorAll(selector) { return selector === 'a.row-clickable[href^="#"]' ? rows : [] },
+    querySelector() { return null }
+  }
+  const ctx = sandbox(['__chatHubTgUnread'], {
+    URL, document, window: {}, getComputedStyle: () => ({ backgroundColor: 'rgb(112,117,121)' }),
+    __chatHubScanRows: async collect => collect()
+  })
+  const out = JSON.parse(await ctx.__chatHubTgUnread([], false))
+  assert.equal(out.observedTotals.total, 7)
+})
+
+test('Telegram search fallback parser keeps rounded unread labels unknown', () => {
+  const fnStart = SRC.indexOf('async function tgSearchResolve(')
+  const declaration = SRC.indexOf('const parseN = s => {', fnStart)
+  assert.ok(fnStart >= 0 && declaration >= fnStart)
+  const open = SRC.indexOf('{', declaration)
+  let depth = 0, end = open
+  for (; end < SRC.length; end++) {
+    if (SRC[end] === '{') depth++
+    else if (SRC[end] === '}' && --depth === 0) break
+  }
+  const ctx = {}
+  vm.createContext(ctx)
+  vm.runInContext(SRC.slice(declaration, end + 1).replace('const parseN', 'globalThis.parseN'), ctx)
+  assert.equal(ctx.parseN('0'), 0)
+  assert.equal(ctx.parseN('7'), 7)
+  for (const label of ['1.2K', '99+', '9007199254740995']) assert.equal(ctx.parseN(label), null, label)
+})
+
+test('Telemost lower-bound total omits conflicting duplicate IDs and non-integer labels', async () => {
+  const run = async rows => {
+    const ctx = sandbox(['__chatHubYdxUnread'], {
+      URL, document: { querySelectorAll(selector) { return selector === '.yamb-chat-list-item' ? rows : [] } },
+      __chatHubScanRows: async collect => collect(), __chatHubBoundedAvatar: async () => null
+    })
+    return JSON.parse(await ctx.__chatHubYdxUnread([], false)).observedTotals.total
+  }
+  const row = (badge, suffix = '000000000123') => {
+    const chatId = '0/0/00000000-0000-4000-8000-' + suffix
+    const root = listFixture('ydx', { badge, chatId })
+    return ydxIdentity(root.children[0].children[0], chatId)
+  }
+  assert.equal(await run([row(7), row(0)]), 0)
+  assert.equal(await run([row(0), row(7)]), 0)
+  assert.equal(await run([row('1.2K', '000000000124')]), 0)
+  assert.equal(await run([row('2 unread 3', '000000000125')]), 0)
+})
+
+test('lower-bound totals ignore hidden stale rows in MAX, Telegram and Telemost', async () => {
+  const maxItem = (count, hidden) => ({
+    hidden,
+    cloneNode() { return this },
+    getBoundingClientRect() { return { width: 120, height: 42 } },
+    querySelector(selector) { return selector === 'span.name' ? { textContent: 'MAX' } : null },
+    querySelectorAll(selector) { return selector === '.indicator' ? [{ textContent: String(count) }] : [] }
+  })
+  const maxRows = [maxItem(7, true), maxItem(0, false)]
+  const max = sandbox(['__chatHubMaxUnread'], {
+    document: { querySelectorAll(selector) { return selector === 'aside div.item' ? maxRows : [] } },
+    getComputedStyle: row => ({ display: 'block', visibility: row.hidden ? 'hidden' : 'visible' }),
+    __chatHubScanRows: async collect => collect(), __chatHubBoundedAvatar: async () => null, formatMaxPreview: () => ''
+  })
+  assert.equal(JSON.parse(await max.__chatHubMaxUnread([], false)).observedTotals.total, 0)
+
+  const tgRow = (peerId, count, hidden) => ({
+    hidden,
+    getAttribute(name) { return name === 'data-peer-id' ? peerId : name === 'href' ? '#' + peerId : '' },
+    getBoundingClientRect() { return { width: 120, height: 42 } },
+    querySelector(selector) {
+      if (selector === '.peer-title') return { textContent: 'TG ' + peerId, getAttribute() { return peerId } }
+      if (selector === '.dialog-subtitle-badge-unread') return { textContent: String(count), className: 'badge' }
+      return null
+    }
+  })
+  const tgRows = [tgRow('1', 7, true), tgRow('2', 0, false)]
+  const tg = sandbox(['__chatHubTgUnread'], {
+    URL, document: { querySelectorAll(selector) { return selector === 'a.row-clickable[href^="#"]' ? tgRows : [] }, querySelector() { return null } }, window: {},
+    getComputedStyle: row => ({ display: 'block', visibility: row.hidden ? 'hidden' : 'visible', backgroundColor: 'rgb(112,117,121)' }),
+    __chatHubScanRows: async collect => collect()
+  })
+  assert.equal(JSON.parse(await tg.__chatHubTgUnread([], false)).observedTotals.total, 0)
+
+  const ydxRow = (count, hidden) => {
+    const root = listFixture('ydx', { badge: count, chatId: '0/0/00000000-0000-4000-8000-' + String(count).padStart(12, '0') })
+    const value = ydxIdentity(root.children[0].children[0], '0/0/00000000-0000-4000-8000-' + String(count).padStart(12, '0'))
+    value.hidden = hidden
+    return value
+  }
+  const ydxRows = [ydxRow(7, true), ydxRow(0, false)]
+  const ydx = sandbox(['__chatHubYdxUnread'], {
+    URL, document: { querySelectorAll(selector) { return selector === '.yamb-chat-list-item' ? ydxRows : [] } },
+    getComputedStyle: row => ({ display: 'block', visibility: row.hidden ? 'hidden' : 'visible' }),
+    __chatHubScanRows: async collect => collect(), __chatHubBoundedAvatar: async () => null
+  })
+  assert.equal(JSON.parse(await ydx.__chatHubYdxUnread([], false)).observedTotals.total, 0)
 })
 
 // Startup integration: real init/buildSection/activateTab/renderChatList/queue,
@@ -450,7 +799,7 @@ function unreadFixture(service, document) {
     pinAvatars: { synthetic: 'already-cached' }, unreadTotals: {}, unreadTotalsAt: {},
     unreadBaseC: {}, unreadBaseM: {}, prevUnread: {}, rankAct: {}, lastMsgAt: {}, lastMsgText: {}, lastMsgPreview: {}, liveAct: {} }
   const ctx = sandbox(['pollUnread', '__chatHubMaxUnread', '__chatHubYdxUnread', '__chatHubGrabAvatar',
-    '__chatHubScanRows', '__chatHubBoundedAvatar', 'formatMaxPreview', 'unreadDeltaFor', 'shouldBumpLiveAct', 'shouldMergeDomTime', 'runUnreadJob',
+    '__chatHubScanRows', '__chatHubBoundedAvatar', 'formatMaxPreview', 'tabBadgeTotal', 'unreadDeltaFor', 'shouldBumpLiveAct', 'shouldMergeDomTime', 'runUnreadJob',
     'unreadViewState', 'unreadGuestCall', 'restorePreviewAuthor', 'pollUnreadService', 'refreshUnreadPresentation', 'refreshSelectedUnread'], {
     setTimeout, clearTimeout,
     state, favoritesOf: () => [pin], svcViewFor: () => view,
@@ -469,6 +818,106 @@ function unreadFixture(service, document) {
     return results.at(-1)
   } }
 }
+
+function tgUnreadFixture(badge, options = {}) {
+  const peerId = String(options.peerId || '123')
+  const titleClass = String(options.titleClass || '')
+  const badgeClass = String(options.badgeClass || 'badge')
+  const badgeBackground = options.badgeBackground || 'rgb(112,117,121)'
+  const row = {
+    cloneNode() { return this },
+    getAttribute(name) { return name === 'data-peer-id' ? peerId : name === 'href' ? '#' + peerId : '' },
+    getBoundingClientRect() { return { width: 120, height: 42 } },
+    querySelector(selector) {
+      if (selector === '.peer-title') return { textContent: 'Synthetic room', className: titleClass, getAttribute() { return peerId }, cloneNode() { return this } }
+      if (selector === '.dialog-subtitle-badge-unread') return badge === null ? null : { textContent: String(badge), className: badgeClass }
+      return null
+    }
+  }
+  const guest = vm.createContext({
+    document: { querySelector() { return null }, querySelectorAll(selector) { return selector === 'a.row-clickable[href^="#"]' ? [row] : [] } },
+    window: {}, URL, getComputedStyle: () => ({ backgroundColor: badgeBackground })
+  })
+  const pin = { id: 'synthetic', serviceId: 'tg', title: 'Synthetic room', url: options.url || 'https://fixture.invalid/-123' }
+  const results = [], badges = []
+  const view = { async executeJavaScript(source) {
+    const output = await new vm.Script(source).runInContext(guest)
+    results.push(JSON.parse(output))
+    return output
+  } }
+  const state = { cfg: { services: [{ id: 'tg' }], pinned: [pin] }, svcViews: { tg: view }, pinViews: {},
+    pinAvatars: { synthetic: 'already-cached' }, unreadTotals: {}, unreadTotalsAt: {}, unreadBaseC: {}, unreadBaseM: {},
+    prevUnread: {}, rankAct: {}, lastMsgAt: {}, lastMsgText: {}, lastMsgPreview: {}, liveAct: {}, tgPeerOf: {} }
+  const ctx = sandbox(['pollUnread', '__chatHubTgUnread', '__chatHubGrabAvatar', '__chatHubScanRows', '__chatHubBoundedAvatar',
+    'formatMaxPreview', 'tabBadgeTotal', 'unreadDeltaFor', 'shouldBumpLiveAct', 'shouldMergeDomTime', 'runUnreadJob',
+    'unreadViewState', 'unreadGuestCall', 'restorePreviewAuthor', 'pollUnreadService', 'refreshUnreadPresentation', 'tgPidSafe'], {
+    setTimeout, clearTimeout, state, favoritesOf: () => [pin], svcViewFor: () => view,
+    document: { querySelector: () => null }, window: { hub: { isWinFocused: async () => true } },
+    updateBadge2: (...args) => badges.push(args), updateBadge: (...args) => badges.push(args),
+    sortFavoritesByActivity() {}, scheduleActSave() {}, tgSearchResolve: async () => null,
+    __chatHubGrabAvatar: function () {}, formatMaxPreview: function () {}
+  })
+  ctx.UNREAD_EXTRACTORS = { tg: ctx.__chatHubTgUnread }
+  return { ctx, state, results, badges, async poll() {
+    const before = results.length
+    await ctx.pollUnread()
+    assert.equal(results.length, before + 1, 'generated Telegram guest script must execute')
+    return results.at(-1)
+  } }
+}
+
+test('Telegram and Telemost keep malformed badges unknown and exact zero non-unread through publication', async () => {
+  const fixture = (service, badge) => service === 'tg'
+    ? tgUnreadFixture(badge)
+    : unreadFixture('ydx', listFixture('ydx', { badge }))
+  for (const service of ['tg', 'ydx']) {
+    const zero = fixture(service, 0)
+    zero.state.unreadTotals.synthetic = { c: 800, m: 0 }
+    zero.state.unreadTotalsAt.synthetic = 123
+    zero.state.unreadDots = { synthetic: true }
+    const zeroResult = await zero.poll()
+    assert.equal(zeroResult.favs[0].found, true, service + ' zero found')
+    assert.equal(zeroResult.favs[0].count, 0, service + ' zero count')
+    assert.equal(zeroResult.favs[0].unread, false, service + ' zero unread')
+    assert.equal(zero.state.unreadTotals.synthetic.c, 0, service + ' zero clears count')
+    assert.equal(zero.state.unreadDots.synthetic, false, service + ' zero clears dot')
+
+    for (const badge of ['1.2K', '99+']) {
+      const unknown = fixture(service, badge)
+      unknown.state.unreadTotals.synthetic = { c: 800, m: 0 }
+      unknown.state.unreadTotalsAt.synthetic = 123
+      unknown.state.unreadDots = { synthetic: false }
+      const unknownResult = await unknown.poll()
+      assert.equal(unknownResult.favs[0].found, false, service + ' ' + badge + ' found')
+      assert.equal(unknown.state.unreadTotals.synthetic.c, 800, service + ' ' + badge + ' preserves count')
+      assert.equal(unknown.state.unreadTotalsAt.synthetic, 123, service + ' ' + badge + ' preserves timestamp')
+      assert.equal(unknown.state.unreadDots.synthetic, false, service + ' ' + badge + ' does not invent dot')
+    }
+  }
+})
+
+test('Telegram exact zero overrides danger/title fallbacks and an explicit marker remains unread', async () => {
+  const canonical = { peerId: '-123', url: 'https://web.telegram.org/k/#-123' }
+  const zero = tgUnreadFixture(0, { ...canonical, badgeClass: 'badge danger', badgeBackground: 'rgb(200,0,0)', titleClass: 'unreadPeerTitle' })
+  zero.state.unreadTotals.synthetic = { c: 800, m: 0 }
+  zero.state.unreadTotalsAt.synthetic = 123
+  zero.state.unreadDots = { synthetic: true }
+  const zeroResult = await zero.poll()
+  assert.deepEqual({ found: zeroResult.favs[0].found, count: zeroResult.favs[0].count, mentions: zeroResult.favs[0].mentions, unread: zeroResult.favs[0].unread }, { found: true, count: 0, mentions: 0, unread: false })
+  assert.equal(zero.state.unreadTotals.synthetic.c, 0)
+  assert.equal(zero.state.unreadTotals.synthetic.m, 0)
+  assert.equal(zero.state.unreadDots.synthetic, false)
+
+  const marker = tgUnreadFixture('•', canonical)
+  marker.state.unreadTotals.synthetic = { c: 800, m: 0 }
+  marker.state.unreadTotalsAt.synthetic = 123
+  marker.state.unreadDots = { synthetic: false }
+  const markerResult = await marker.poll()
+  assert.deepEqual({ found: markerResult.favs[0].found, count: markerResult.favs[0].count, mentions: markerResult.favs[0].mentions, unread: markerResult.favs[0].unread }, { found: true, count: 0, mentions: 0, unread: true })
+  assert.equal(marker.state.unreadTotals.synthetic.c, 0)
+  assert.equal(marker.state.unreadTotals.synthetic.m, 0)
+  assert.equal(marker.state.unreadDots.synthetic, true)
+})
 
 test('ydx: exact microsecond row date reaches activity through the serialized scheduler', async () => {
   const doc = listFixture('ydx', { badge: 2 })
@@ -666,9 +1115,15 @@ for (const fixture of [
 const pt = sandbox(['parseChatTime'])
 
 test('parseChatTime: «10:24» — сегодняшние часы/минуты', () => {
-  const r = pt.parseChatTime('10:24')
+  const fixedNow = new Date(2026, 10, 18, 12, 0, 0, 0).getTime()
+  class Clock extends Date {
+    constructor(...args) { super(...(args.length ? args : [fixedNow])) }
+    static now() { return fixedNow }
+  }
+  const clocked = sandbox(['parseChatTime'], { Date: Clock })
+  const r = clocked.parseChatTime('10:24')
   const d = new Date(r.at)
-  const n = new Date()
+  const n = new Clock()
   assert.equal(r.dayOnly, false)
   assert.equal(d.getHours(), 10)
   assert.equal(d.getMinutes(), 24)

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
@@ -29,6 +29,8 @@ function fixture(t, initial, backup, faults = {}) {
     setBounds() {}
     setOverlayIcon() {}
   }
+  const shellFrame = { url: pathToFileURL(path.join(root, 'index.html')).href }
+  const shellSender = { getType: () => 'window', getURL: () => shellFrame.url, mainFrame: shellFrame }
   const electron = {
     app: { commandLine: { appendSwitch() {} }, getPath: () => dir, on() {}, requestSingleInstanceLock: () => true, setAppUserModelId() {}, whenReady: () => ({ then: fn => ready.push(fn) }) },
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) }, nativeTheme: {},
@@ -36,9 +38,9 @@ function fixture(t, initial, backup, faults = {}) {
     BrowserWindow: FakeWindow,
     session: { fromPartition: () => ({ setProxy() {}, setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }) }
   }
-  const ctx = vm.createContext({ require: n => n === 'electron' ? electron : n === 'fs' ? new Proxy(fs, { get: (o, k) => faults[k] || o[k] }) : n === 'path' ? path : n === './guest-notification-policy' ? require('../guest-notification-policy') : (() => { throw Error(n) })(), process: { env: {}, pid: process.pid, platform: process.platform }, console: { error: (...a) => notices.push(a), warn: (...a) => notices.push(a) }, __dirname: root, setTimeout: fn => timers.push(fn), clearTimeout() {} })
+  const ctx = vm.createContext({ require: n => n === 'electron' ? electron : n === 'fs' ? new Proxy(fs, { get: (o, k) => faults[k] || o[k] }) : n === 'path' ? path : n === 'url' ? { pathToFileURL } : n === './guest-notification-policy' ? require('../guest-notification-policy') : (() => { throw Error(n) })(), process: { env: {}, pid: process.pid, platform: process.platform }, console: { error: (...a) => notices.push(a), warn: (...a) => notices.push(a) }, __dirname: root, setTimeout: fn => timers.push(fn), clearTimeout() {} })
   vm.runInContext(source, ctx)
-  return { target, dir, notices, faults, ctx, windows, timers, get: () => handlers.get('config:get')(), save: cfg => handlers.get('config:save')(null, cfg) }
+  return { target, dir, notices, faults, ctx, windows, timers, shellSender, shellFrame, get: () => handlers.get('config:get')({ sender: shellSender, senderFrame: shellFrame }), save: cfg => handlers.get('config:save')({ sender: shellSender, senderFrame: shellFrame }, cfg), invoke: (name, event, ...args) => handlers.get(name)(event, ...args) }
 }
 const good = JSON.stringify({ services: [], pinned: [], future: { nested: ['keep'] } })
 
@@ -69,6 +71,19 @@ test('invalid IPC input cannot poison memory or disk', t => {
     assert.throws(() => f.save(bad))
     assert.equal(fs.readFileSync(f.target, 'utf8'), good)
   }
+})
+test('IPC rejects a webview sender before reading or saving configuration', t => {
+  const f = fixture(t, good)
+  const guest = { sender: { getType: () => 'webview', getURL: () => 'https://example.test/' } }
+  assert.throws(() => f.invoke('config:get', guest), /Unauthorized IPC sender/)
+  assert.throws(() => f.invoke('config:save', guest, f.get()), /Unauthorized IPC sender/)
+})
+test('IPC rejects a non-main frame inside the shell WebContents', t => {
+  const f = fixture(t, good)
+  const childFrame = { url: f.shellFrame.url }
+  const event = { sender: f.shellSender, senderFrame: childFrame }
+  assert.throws(() => f.invoke('config:get', event), /Unauthorized IPC sender/)
+  assert.throws(() => f.invoke('config:save', event, f.get()), /Unauthorized IPC sender/)
 })
 
 test('window autosave failure retains the previous in-memory window state', t => {
