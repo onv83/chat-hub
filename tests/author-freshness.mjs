@@ -37,7 +37,7 @@ function polling(preview, author, messageId) {
   for(const k of ['pinAvatars','unreadTotals','unreadTotalsAt','unreadBaseC','unreadBaseM','prevUnread','rankAct','lastMsgAt','lastMsgText','lastMsgPreview','liveAct','tgPeerOf']) state[k]={}
   state.svcViews.max={isConnected:true,addEventListener(){},executeJavaScript:async()=>JSON.stringify({favs:[{id:'p',found:true,preview,messageId}],svcTotals:{total:0,mentions:0}})}
   const ctx=vm.createContext({state,Date,console,setTimeout,clearTimeout,document:{querySelector(){return null}},favoritesOf:()=>state.cfg.pinned,svcViewFor:()=>state.svcViews.max,updateBadge(){},updateBadge2(){},sortFavoritesByActivity(){},scheduleActSave(){},__chatHubGrabAvatar:function(){},formatMaxPreview:function(){},UNREAD_EXTRACTORS:{max:function(){}}})
-  for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime']) vm.runInContext(fn(n),ctx)
+  for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','tabBadgeTotal','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime']) vm.runInContext(fn(n),ctx)
   if(src.includes('function restorePreviewAuthor(')) vm.runInContext(fn('restorePreviewAuthor'),ctx)
   return {ctx,state}
 }

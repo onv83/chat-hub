@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import vm from 'node:vm'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(path.join(root, 'main.js'))
 function fixture(t, initial) {
@@ -34,6 +34,8 @@ function fixture(t, initial) {
     on() {} loadFile() {} setBounds() {} maximize() {}
     setOverlayIcon(icon, description) { steps.push(['overlay', icon, description]) }
   }
+  const shellFrame = { url: pathToFileURL(path.join(root, 'index.html')).href }
+  const shellSender = { getType: () => 'window', getURL: () => shellFrame.url, mainFrame: shellFrame }
   const electron = {
     app: { commandLine: { appendSwitch() {} }, getPath: () => dir,
       on(n, fn) { events.set(n, [...(events.get(n) || []), fn]) },
@@ -50,21 +52,21 @@ function fixture(t, initial) {
   })
   ready()
   return { sessions, steps, defaultSession, unrelated, fromPartition, imports,
-    get: () => handlers.get('config:get')(), save: cfg => handlers.get('config:save')(null, cfg) }
+    get: () => handlers.get('config:get')({ sender: shellSender, senderFrame: shellFrame }), save: cfg => handlers.get('config:save')({ sender: shellSender, senderFrame: shellFrame }, cfg) }
 }
-function assertDenied(ses) {
+function assertDenied(ses, permission) {
   for (const wc of [null, undefined, { getURL() { throw Error('do not dereference guest') } }]) {
     let answer, calls = 0
-    ses.request(wc, 'notifications', value => { answer = value; calls++ }, { isMainFrame: false })
+    ses.request(wc, permission, value => { answer = value; calls++ }, { isMainFrame: false })
     assert.equal(answer, false)
     assert.equal(calls, 1)
-    assert.equal(ses.check(wc, 'notifications', 'https://example.test', { isMainFrame: false }), false)
+    assert.equal(ses.check(wc, permission, 'https://example.test', { isMainFrame: false }), false)
   }
 }
 test('startup denies guest notifications on all four service partitions before first window', t => {
   const f = fixture(t)
   for (const id of ['mm', 'tg', 'max', 'ydx']) {
-    assertDenied(f.sessions.get('persist:' + id))
+    assertDenied(f.sessions.get('persist:' + id), 'notifications')
     assert.ok(f.steps.findIndex(s => s[0] === 'check' && s[1] === 'persist:' + id) < f.steps.findIndex(s => s[0] === 'window'))
   }
 })
@@ -82,20 +84,16 @@ test('policy remains local to configured service sessions, not default/unrelated
     assert.equal(ses.check, undefined)
   }
 })
-test('other permissions retain prior request grants and Electron 33 check defaults', t => {
+test('guest service sessions deny every browser permission by default', t => {
   const f = fixture(t), ses = f.sessions.get('persist:mm')
-  for (const permission of ['media', 'fullscreen', 'clipboard-read', 'clipboard-sanitized-write', 'geolocation', 'midiSysex', 'unknown', 'deprecated-sync-clipboard-read']) {
-    let answer
-    ses.request(null, permission, v => answer = v)
-    assert.equal(answer, true, permission)
-    // Electron 33.4.11 denies only DEPRECATED_SYNC_CLIPBOARD_READ by default.
-    assert.equal(ses.check ? ses.check(null, permission, '', {}) : permission !== 'deprecated-sync-clipboard-read', permission !== 'deprecated-sync-clipboard-read', permission)
+  for (const permission of ['media', 'display-capture', 'fullscreen', 'clipboard-read', 'clipboard-sanitized-write', 'geolocation', 'midiSysex', 'openExternal', 'unknown', 'deprecated-sync-clipboard-read']) {
+    assertDenied(ses, permission)
   }
 })
 test('saved new/custom service partitions are protected before proxy setup', t => {
   const f = fixture(t), cfg = f.get()
   f.save({ ...cfg, services: [...cfg.services, { id: 'extra', url: 'https://example.test', partition: 'persist:custom' }] })
-  assertDenied(f.sessions.get('persist:custom'))
+  assertDenied(f.sessions.get('persist:custom'), 'notifications')
   assert.ok(f.steps.findIndex(s => s[0] === 'check' && s[1] === 'persist:custom') < f.steps.findIndex(s => s[0] === 'proxy' && s[1] === 'persist:custom'))
 })
 test('startup never imports the inert broker or ledger and never constructs native toasts', t => {

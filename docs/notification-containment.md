@@ -2,18 +2,13 @@
 
 ## Current state
 
-The main process installs request and check handlers on the configured ChatHub service sessions before creating the first window. Saving a changed service list installs the same policy before proxy setup. Both handlers deny `notifications`, including calls with null webContents from worker paths. The policy stays attached to the session when guest views are reloaded or recreated.
+The main process installs request and check handlers on the configured ChatHub service sessions before creating the first window. Saving a changed service list installs the same policy before proxy setup. Both handlers deny every guest browser permission, including calls with null webContents from worker paths. The policy stays attached to the session when guest views are reloaded or recreated.
 
-This temporarily blocks **all guest system notifications, including favorites**. It does not modify messenger account preferences, other browsers/native clients, unread state, or Windows notification history. Changes to main.js take effect on the next application launch; the integration did not restart the running app. There is no new toggle that would imply favorites delivery is available.
+This blocks **all guest system notifications, including favorites**, and also camera, microphone, display capture, geolocation and clipboard permissions inside the embedded messenger pages. It does not modify messenger account preferences, other browsers/native clients, unread state, or Windows notification history. Changes to main.js take effect on the next application launch. There is no new toggle that would imply favorites delivery or browser-device access is available.
 
-Unlike the original proposed patch, this integration does not apply an allow-all handler to the default session or every `session-created` event. Only sessions named by configured services are touched. Existing request grants for other permissions stay unchanged. The check handler preserves Electron 33.4.11's default denial of `deprecated-sync-clipboard-read`; returning true for every non-notification check would broaden clipboard access.
+Unlike the original proposed patch, this integration does not apply an allow-all handler to the default session or every `session-created` event. Only sessions named by configured services are touched. There is currently no scoped consent path for any guest permission.
 
-Reference source inspected for the installed Electron 33.4.11:
-- `electron/electron`, tag `v33.4.11`, `shell/browser/electron_permission_manager.cc`, `CheckPermissionWithDetails`: default check denies `DEPRECATED_SYNC_CLIPBOARD_READ` and grants other checks.
-- Same tag, `shell/common/gin_converters/content_converter.cc`: the permission is exposed as `deprecated-sync-clipboard-read`.
-- Prepared official Electron session documentation: both permission hooks are needed, and notification checks may have null webContents.
-
-Recheck this compatibility exception when changing Electron versions. No other permission policy hardening is included in this batch.
+Recheck this policy whenever Electron or the supported messenger functions change. Add a scoped, explicit consent flow before enabling any feature that needs a browser or device permission.
 
 ## Inert broker foundation
 
