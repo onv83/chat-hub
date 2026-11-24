@@ -4,6 +4,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import path from 'node:path'
 import { createServer } from 'node:net'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { ensureBrandedLauncher } from './ensure-branded-launcher.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 if (process.platform !== 'win32' || process.arch !== 'x64') {
@@ -16,20 +17,48 @@ const folderName = `ChatHub-${version}-win64`
 const outDir = path.join(distRoot, folderName)
 const zipPath = path.join(distRoot, `${folderName}.zip`)
 const electronDist = path.join(root, 'node_modules', 'electron', 'dist')
-let launcherPath = path.join(electronDist, 'ChatHub.exe')
-try {
-  await stat(launcherPath)
-} catch (e) {
-  launcherPath = path.join(electronDist, 'electron.exe')
-  await stat(launcherPath)
+async function installedLauncher() {
+  let runtimeVersion
+  try { runtimeVersion = (await readFile(path.join(electronDist, 'version'), 'utf8')).trim().replace(/^v/, '') } catch { return '' }
+  if (runtimeVersion !== String(pkg.devDependencies?.electron || '').replace(/^v/, '')) return ''
+  for (const name of ['electron.exe']) {
+    const candidate = path.join(electronDist, name)
+    try { await stat(candidate); return candidate } catch {}
+  }
+  return ''
 }
+async function ensureElectronRuntime() {
+  const existing = await installedLauncher()
+  if (existing) return existing
+  const installer = path.join(root, 'node_modules', 'electron', 'install.js')
+  await stat(installer)
+  execFileSync(process.execPath, [installer], { cwd: root, stdio: 'inherit' })
+  const installed = await installedLauncher()
+  if (!installed) throw new Error('Electron runtime installation completed without a Windows launcher')
+  return installed
+}
+const launcherPath = await ensureBrandedLauncher({ resolveElectron: () => ensureElectronRuntime() })
 
 const appFiles = [
   'package.json', 'main.js', 'preload.js', 'renderer.js', 'styles.css', 'index.html',
-  'service-health.js', 'guest-notification-policy.js', 'build', 'LICENSE', 'NOTICE', 'README.md'
+  'guest-notification-policy.js', 'mcp-export', 'build', 'LICENSE', 'NOTICE', 'README.md'
 ]
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+async function rmWithRetry(target, attempts = 20) {
+  let last
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      await rm(target, { recursive: true, force: true })
+      return
+    } catch (error) {
+      last = error
+      if (!['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error?.code) || attempt === attempts - 1) throw error
+      await sleep(250)
+    }
+  }
+  throw last
+}
 const freePort = () => new Promise((resolve, reject) => {
   const server = createServer()
   server.once('error', reject)
@@ -40,7 +69,11 @@ const freePort = () => new Promise((resolve, reject) => {
 })
 async function smokePortable(launcher, dataDir, expectedShellUrl) {
   const port = await freePort()
-  const child = spawn(launcher, [`--remote-debugging-port=${port}`], { cwd: outDir, windowsHide: true, stdio: 'ignore' })
+  const smokeEnv = { ...process.env }
+  for (const key of Object.keys(smokeEnv)) {
+    if (key.toUpperCase() === 'CHATHUB_DEV_DATA') delete smokeEnv[key]
+  }
+  const child = spawn(launcher, [`--remote-debugging-port=${port}`], { cwd: outDir, windowsHide: true, stdio: 'ignore', env: smokeEnv })
   try {
     const deadline = Date.now() + 15000
     let ready = false
@@ -61,7 +94,7 @@ async function smokePortable(launcher, dataDir, expectedShellUrl) {
       try { execFileSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch (e) {}
     }
     await sleep(400)
-    await rm(dataDir, { recursive: true, force: true })
+    await rmWithRetry(dataDir)
   }
 }
 
@@ -70,17 +103,21 @@ for (const file of appFiles) {
   catch { throw new Error(`Packaging input is missing: ${file}`) }
 }
 
-await rm(outDir, { recursive: true, force: true })
-await rm(zipPath, { force: true })
+await rmWithRetry(outDir)
+await rmWithRetry(zipPath)
 await mkdir(distRoot, { recursive: true })
 const appDir = path.join(outDir, 'resources', 'app')
 await cp(electronDist, outDir, { recursive: true, force: true })
+await rm(path.join(outDir, '.chathub-launcher.json'), { force: true })
 await rm(appDir, { recursive: true, force: true })
 await mkdir(appDir, { recursive: true })
 
 const packagedLauncher = path.join(outDir, 'ChatHub.exe')
+const stagedElectron = path.join(outDir, 'electron.exe')
 if (path.basename(launcherPath).toLowerCase() !== 'chathub.exe') {
-  await rename(path.join(outDir, 'electron.exe'), packagedLauncher)
+  await rename(stagedElectron, packagedLauncher)
+} else {
+  await rm(path.join(outDir, 'electron.exe'), { force: true })
 }
 await stat(packagedLauncher)
 try {

@@ -32,7 +32,7 @@ function harness(ids = ['mm', 'max']) {
     sortFavoritesByActivity() {}, scheduleActSave() {}, mmTabCounts: async () => {}, mmLastPosts: async () => {},
     __chatHubGrabAvatar: function () {}, formatMaxPreview: function () {}, tgSearchResolve: async () => null,
     UNREAD_EXTRACTORS: Object.fromEntries(ids.map(id => [id, function () {}])) })
-  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','recoverStaleMmGuest','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
+  for (const name of ['__chatHubScanRows','__chatHubBoundedAvatar','tabBadgeTotal','runUnreadJob','unreadViewState','unreadGuestCall','recoverStaleMmGuest','pollUnread','pollUnreadService','refreshUnreadPresentation','refreshSelectedUnread','queueSelectedUnread','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','mmTabCounts','mmLastPosts','fmtChatWhen','mergeLastMessageTime','restorePreviewAuthor']) {
     if (name.startsWith('mm')) continue
     vm.runInContext(extract(name), ctx)
   }
@@ -52,10 +52,41 @@ test('virtual partial service totals never replace a cached service badge with f
   assert.deepEqual(h.state.svcTabTotals.max, { t: 20, m: 3 })
 })
 
+test('Mattermost authoritative zero clears an inherited sidebar unread marker', async () => {
+  const h = harness(['mm'])
+  h.state.unreadTotals.mm = { c: 7, m: 0 }
+  h.state.unreadTotalsAt.mm = 123
+  h.state.unreadDots = { mm: true }
+  h.state.mmPinCounts = { mm: { count: 0, mentions: 0, observedAt: 1000 } }
+  h.replies.mm = async () => JSON.stringify({
+    favs: [{ id: 'mm', found: true, count: 0, mentions: 0, unread: true }],
+    svcTotals: { total: 0, mentions: 0 }
+  })
+  await h.ctx.pollUnread()
+  assert.equal(h.state.unreadTotals.mm.c, 0)
+  assert.equal(h.state.unreadTotals.mm.m, 0)
+  assert.equal(h.state.unreadDots.mm, false)
+})
+
+test('Telegram search merge preserves a partial service lower bound', async () => {
+  const h = harness(['tg'])
+  h.state.svcTabTotals = { tg: { t: 26, m: 0, partial: true } }
+  h.replies.tg = async () => JSON.stringify({
+    favs: [{ id: 'tg', found: false }],
+    svcTotals: null,
+    observedTotals: { total: 26, mentions: 0 },
+    coverage: { complete: false }
+  })
+  h.ctx.tgSearchResolve = async () => ({ favs: [{ id: 'tg', found: true, count: 7, mentions: 0 }] })
+  await h.ctx.pollUnread()
+  assert.equal(JSON.stringify(h.state.svcTabTotals.tg), JSON.stringify({ t: 26, m: 0, partial: true }))
+  assert.ok(h.badges.some(b => JSON.stringify(b) === JSON.stringify(['tg', 26, 0, true])))
+})
+
 function result(id, count) { return JSON.stringify({ favs: [{ id, count, mentions: 0, found: true }], svcTotals: { total: count, mentions: 0 } }) }
 
 // Synthetic HTTP only: execute the production-generated guest, never an account.
-function mmFixture(h, override = () => undefined) {
+function mmFixture(h, override = () => undefined, delayMs = 0) {
   const requests = []
   const channel = { id: 'chan', team_id: 'team', type: 'O', name: 'room', last_post_at: 1000 }
   const defaults = {
@@ -71,6 +102,7 @@ function mmFixture(h, override = () => undefined) {
   }
   const guest = vm.createContext({ URL, location: { origin: 'https://fixture.invalid' }, fetch: async (url, opts) => {
     requests.push(url)
+    if (delayMs) await new Promise(resolve => globalThis.setTimeout(resolve, delayMs))
     assert.ok(!opts?.method || opts.method === 'GET', 'metadata requests must be read-only')
     let data = override(url)
     if (data === undefined) data = defaults[url]
@@ -372,6 +404,42 @@ test('MM hidden stale physical guest reloads once and next poll publishes curren
   assert.equal(h.calls.mm, 2)
   assert.equal(h.state.mmPinCounts.mm.count, 3)
   assert.equal(h.state.mmPinCounts.mm.mentions, 3)
+})
+
+test('MM normal metadata batch publishes every favourite before its scheduler deadline', async () => {
+  const h = harness(['mm']); h.loadMM()
+  const n = 16
+  const channels = Array.from({ length: n }, (_, i) => ({ id: 'chan-' + i, team_id: 'team', type: 'O', name: 'room-' + i, last_post_at: 200000 + i }))
+  h.state.cfg.pinned = channels.map((channel, i) => ({ id: 'mm-' + i, serviceId: 'mm', url: 'https://fixture.invalid/alpha/channels/' + channel.name }))
+  mmFixture(h, url => {
+    if (url.endsWith('/channels')) return channels
+    const post = url.match(/^\/api\/v4\/channels\/(chan-\d+)\/posts\?per_page=1$/)
+    if (post) return { order: [], posts: {} }
+    const unread = url.match(/^\/api\/v4\/users\/self\/channels\/(chan-\d+)\/unread$/)
+    if (unread) return { team_id: 'team', channel_id: unread[1], msg_count: 0, mention_count: 0 }
+  }, 15)
+  h.state.cfg.pinned[0].url = 'https://fixture.invalid/alpha/channels/room-0'
+  const originalExecute = h.state.svcViews.mm.executeJavaScript
+  let guestError = '', guestOutput = ''
+  h.state.svcViews.mm.executeJavaScript = async script => {
+    try { guestOutput = await originalExecute(script); return guestOutput } catch (error) { guestError = String(error?.stack || error); throw error }
+  }
+  const run = h.ctx.runUnreadJob
+  h.ctx.runUnreadJob = (key, service, work, budget) => run(key, service, work, key === 'mm:posts' ? 350 : budget)
+  const task = h.ctx.mmLastPosts()
+  await flush()
+  assert.equal([...h.timers.values()][0]?.at, 100350, 'test deadline must replace the production 45-second budget')
+  // Ограниченное ожидание условия вместо фиксированных 400 мс: под нагрузкой
+  // 16 фикстур успевают не всегда. Ждём непустой guestOutput до 5000 мс, шаг 25 мс.
+  const guestDeadline = Date.now() + 5000
+  while (!guestOutput && !guestError && Date.now() < guestDeadline) {
+    await new Promise(resolve => globalThis.setTimeout(resolve, 25))
+  }
+  await h.tick(351)
+  await task
+  assert.equal(guestError, '')
+  assert.deepEqual(JSON.parse(guestOutput).res.map(r => r.id).sort(), channels.map((_, i) => 'mm-' + i).sort())
+  assert.deepEqual(Object.keys(h.state.mmPinCounts || {}).sort(), channels.map((_, i) => 'mm-' + i).sort())
 })
 
 test('MM normal metadata batch may exceed 15 seconds and still publish', async () => {

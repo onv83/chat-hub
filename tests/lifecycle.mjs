@@ -425,14 +425,16 @@ test('memory bound: 100 priority open/close cycles keep resources bounded', () =
   console.log('RESOURCE 100 priority cycles:', JSON.stringify(resources))
   assert.deepEqual(resources, { peak: 2, views: 0, timers: 0, intervals: 0, listeners: 0, queued: 0, busy: false })
 })
-const pinMaps = ['liveAct', 'rankAct', 'prevUnread', 'lastUsed', 'lastMsgAt', 'lastMsgDayOnly', 'lastMsgText', 'tgPeerOf', 'tgSearchedAt', 'pinAvatars', 'lastMsgPreview', 'msgAuth', 'unreadBaseC', 'unreadBaseM', 'unreadTotals', 'unreadTotalsAt', 'mmPinCounts', '__prevLastMsgAt']
+const pinMaps = ['liveAct', 'rankAct', 'prevUnread', 'lastUsed', 'lastMsgAt', 'lastMsgDayOnly', 'lastMsgText', 'tgPeerOf', 'pinAvatars', 'lastMsgPreview', 'msgAuth', 'unreadBaseC', 'unreadBaseM', 'unreadTotals', 'unreadTotalsAt', 'mmPinCounts', '__prevLastMsgAt']
 test('lifecycle: 100 removed pins leave no cache keys or persisted activity', async () => {
   const state = { cfg: { pinned: [], activity: {}, selectedPinId: '' }, pinViews: {}, svcIcons: { tg: 'keep-icon' }, mmUserIds: { user: 'keep-user' } }
   for (const key of pinMaps) { state[key] = { keep: 'retained' }; state.cfg.activity[key] = { keep: 'persisted' } }
-  const ctx = context(['removePin', 'activitySnapshot'], {
-    state, tgScrollDone: false, window: { hub: { saveConfig: async () => {} } },
+  const ctx = context(['cloneConfigForSave', 'queueConfigSave', 'saveConfig', 'removePin', 'activitySnapshot'], {
+    state, window: { hub: { saveConfig: async () => {} } },
     renderChatList() {}, updateSvcBar() {}, toast() {}
   })
+  // Compatibility only for the pre-removal source; no lifecycle assertion covers this dead state.
+  if (/\btgScrollDone\b/.test(source)) ctx.tgScrollDone = false
   for (let i = 0; i < 100; i++) {
     const id = 'synthetic-' + i
     state.cfg.pinned.push({ id, serviceId: 'tg' })

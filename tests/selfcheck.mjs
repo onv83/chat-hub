@@ -129,14 +129,13 @@ async function checkShell(sh) {
     const out = {
       label: light && light.parentElement ? light.parentElement.textContent.trim() : null,
       favCb: !!document.getElementById('fav-badge-always'),
-      iconsCb: !!document.getElementById('tab-icons'),
-      tgCb: !!document.getElementById('tg-bg-index')
+      iconsCb: !!document.getElementById('tab-icons')
     }
     activateTab(prev || 'combined')
     return out
   })()`)
   pass('настройки: подпись «Светлая (мм не поддерживается)»', ui && ui.label === 'Светлая (мм не поддерживается)', ui && ui.label)
-  pass('настройки: галочки ★-бейджа, иконок вкладок, индексации TG', ui && ui.favCb && ui.iconsCb && ui.tgCb, ui)
+  pass('настройки: галочки ★-бейджа и иконок вкладок', ui && ui.favCb && ui.iconsCb, ui)
 
   // ★-бейдж: видимость при выключенных общих счётчиках
   const star = await ev(sh, `(() => {

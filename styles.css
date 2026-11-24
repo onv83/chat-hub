@@ -166,6 +166,15 @@ body.split-dragging webview { pointer-events: none !important; }
 .chat-row-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row-line1 { display: flex; align-items: baseline; gap: 6px; }
 .row-line1 .chat-row-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-row-comment { flex: 0 1 auto; max-width: 45%; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body.hide-chat-comment .chat-row-comment { display: none; }
+body.fav-comment-inline .row-line1 { gap: 3px; }
+body.fav-comment-inline .row-line1 .chat-row-title { flex: 0 1 auto; }
+body.fav-comment-inline .chat-row-comment { flex: 0 1 auto; }
+body.fav-comment-right .chat-row-comment:not(:empty) { margin-left: auto; }
+body.fav-comment-right .chat-row-comment:not(:empty) + .row-badge { margin-left: 0; }
+body.fav-comment-title .row-line1 { gap: 3px; }
+body.fav-comment-title .chat-row-comment { color: inherit; font-size: inherit; font-weight: 600; }
 .row-time { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
 .row-line2 { display: flex; align-items: center; gap: 6px; margin-top: 1px; }
 .chat-row-src { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -174,11 +183,31 @@ body.hide-chat-source .row-line2 { display: none; }
 body.hide-chat-source .chat-row-preview { -webkit-line-clamp: 3; margin-top: 2px; }
 .chat-row-preview { color: var(--muted); font-size: 11px; line-height: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; word-break: break-word; margin-top: 1px; }
 .chat-row-preview b { font-weight: 700; color: var(--text); }
+/* Плотность строк избранного: большая аватарка повторяет прежний вид. */
+body.fav-avatar-medium .chat-row { gap: 8px; padding: 6px 9px; }
+body.fav-avatar-medium .row-avatar { flex-basis: 38px; width: 38px; height: 38px; font-size: 16px; }
+body.fav-avatar-small .chat-row { gap: 7px; padding: 5px 8px; }
+body.fav-avatar-small .row-avatar { flex-basis: 32px; width: 32px; height: 32px; font-size: 14px; }
+body.fav-preview-one-line .chat-row-preview { -webkit-line-clamp: 1; }
+body.hide-chat-preview .chat-row-preview { display: none; }
+body.hide-chat-preview .chat-row { padding-top: 6px; padding-bottom: 6px; }
+body.hide-chat-preview.fav-avatar-small .chat-row { padding-top: 4px; padding-bottom: 4px; }
 .chat-row:hover .row-time { visibility: hidden; }
 .row-menu { position: fixed; top: 0; left: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 8px 24px rgba(0, 0, 0, .4); padding: 4px; display: flex; flex-direction: column; min-width: 160px; z-index: 400; }
 .row-menu.hidden { display: none; }
 .row-menu button { display: flex; align-items: center; gap: 8px; background: none; border: none; color: var(--text); font: 12px/1.2 inherit; padding: 8px 10px; text-align: left; border-radius: 6px; cursor: pointer; white-space: nowrap; }
 .row-menu button:hover { background: var(--bg); }
+.annotation-dialog-backdrop { position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .48); }
+.annotation-dialog { width: min(420px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); box-shadow: 0 18px 48px rgba(0, 0, 0, .48); }
+.annotation-dialog h2 { margin: 0; font-size: 16px; }
+.annotation-dialog p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.annotation-dialog label { font-size: 12px; font-weight: 600; }
+.annotation-dialog input { width: 100%; min-width: 0; box-sizing: border-box; }
+.annotation-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.annotation-dialog-actions button { border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 7px; padding: 7px 11px; font: inherit; cursor: pointer; }
+.annotation-dialog-actions button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.annotation-dialog-actions button:hover { filter: brightness(1.08); }
+.chat-row .icon-btn:focus { opacity: 1; pointer-events: auto; outline: 2px solid var(--accent); outline-offset: 2px; }
 /* кнопки 📌 и ✕ — ПОВЕРХ строки (position:absolute), места под них не
    резервируется: название чата тянется на всю длину, кнопки появляются
    только при наведении и не обрезают заголовок в покое */
@@ -255,6 +284,22 @@ body.hide-chat-source .chat-row-preview { -webkit-line-clamp: 3; margin-top: 2px
 .empty h2 { color: var(--text); margin: 0 0 8px; }
 .hidden { display: none !important; }
 
+/* ---------- MAX: сеанс завершён ----------
+   Маркер на вкладке важнее настройки «скрыть счётчики»: это не число, а
+   предупреждение о том, что данные не обновляются. */
+.tab .badge.auth-required { background: #da373c; font-weight: 800; }
+body.hide-badges #tabbar .tab[data-tab="svc:max"] .badge.auth-required { display: inline-block !important; }
+.svc-session-bar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; font-size: 13px; color: var(--text);
+  background: rgba(218, 55, 60, .16);
+  border-bottom: 1px solid rgba(218, 55, 60, .5);
+}
+.svc-session-bar .svc-session-text { flex: 1 1 auto; }
+.svc-session-bar .btn { flex: 0 0 auto; }
+.chat-row .row-stale { flex: 0 0 auto; color: #e0a03a; font-size: 12px; font-weight: 700; padding: 0 2px; }
+.chat-row.stale .row-time { opacity: .55; }
+
 /* ---------- настройки ---------- */
 /* настройки: на всю ширину окна + современная прокрутка (как у списка чатов, п.14) */
 .settings { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 22px 32px 60px; scroll-behavior: smooth; overscroll-behavior: contain; }
@@ -279,6 +324,17 @@ body.hide-chat-source .chat-row-preview { -webkit-line-clamp: 3; margin-top: 2px
 .settings-tab:hover { color: var(--text); border-color: var(--accent); }
 .settings-tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .settings-pane { min-height: 180px; }
+.setting-group { min-width: 0; margin: 12px 0; padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.setting-group legend { padding: 0 6px; color: var(--text); font-weight: 600; }
+.setting-group label { display: flex; align-items: center; gap: 7px; min-height: 24px; }
+.setting-options { display: grid; gap: 6px; }
+.setting-radio-row { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+.setting-radio-row label { white-space: nowrap; }
+.setting-choice { display: grid; gap: 6px; margin: 14px 0 10px; }
+.setting-choice-label { color: var(--muted); font-size: 12px; }
+.setting-suboption { display: grid; gap: 6px; margin: 8px 0 0 26px; }
+.setting-suboption.is-disabled { opacity: .5; }
+.setting-suboption.is-disabled label { cursor: not-allowed; }
 .hint { color: var(--muted); font-size: 12.5px; }
 .form-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
 .form-row input { flex: 1; }
@@ -293,6 +349,10 @@ input, textarea {
 }
 input:focus, textarea:focus { outline: none; border-color: var(--accent); }
 .pin-idx { color: var(--muted); width: 22px; }
+.pin-row { display: grid; grid-template-columns: 30px minmax(140px, 1fr) minmax(130px, .8fr) minmax(130px, .8fr) minmax(200px, 1.6fr) auto; gap: 8px; margin-bottom: 8px; align-items: center; }
+.pin-row input { min-width: 0; width: 100%; box-sizing: border-box; }
+.pin-row-head { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.pin-row-head span:first-child, .pin-row-head span:last-child { visibility: hidden; }
 .settings-actions { margin-top: 28px; display: flex; gap: 10px; }
 
 #toast {
@@ -385,3 +445,33 @@ body.theme-light .tab.active { color: var(--text); }
    остаются тёмные системные скроллбары) */
 body { color-scheme: dark; }
 body.theme-light { color-scheme: light; }
+
+/* ---------- MCP: выгрузка проектов в Markdown ---------- */
+.mcp-settings { display: flex; flex-direction: column; gap: 12px; }
+.mcp-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mcp-label { color: var(--muted); font-size: 12.5px; }
+.mcp-path { flex: 1 1 320px; min-width: 220px; }
+.mcp-depth { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.mcp-range { flex: 1 1 240px; max-width: 420px; }
+.mcp-depth-label { min-width: 54px; color: var(--text); font-size: 12.5px; }
+.mcp-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.mcp-card {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+}
+.mcp-card-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.mcp-status { font-size: 12px; color: var(--muted); }
+.mcp-card[data-mcp-card="ydx"] .mcp-status { font-style: italic; }
+.mcp-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.mcp-actions .btn { padding: 4px 9px; font-size: 12px; }
+.mcp-run { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mcp-run-hint { color: var(--muted); font-size: 12px; }
+.mcp-progress {
+  margin: 0; padding-left: 18px; max-height: 150px; overflow: auto;
+  color: var(--muted); font-size: 12px;
+}
+.mcp-progress:empty { display: none; }
+.mcp-progress-line { margin: 2px 0; }
+.mcp-report { display: flex; flex-direction: column; gap: 4px; color: var(--text); font-size: 12.5px; }
+.mcp-report:empty { display: none; }
+.mcp-report-line { white-space: pre-wrap; overflow-wrap: anywhere; }

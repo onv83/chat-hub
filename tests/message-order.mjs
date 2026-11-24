@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const src=readFileSync(new URL('../renderer.js',import.meta.url),'utf8');
-function fn(n){const a=src.search(new RegExp('(?:async )?function '+n+'\\('));if(a<0)return '';const b=src.slice(a+1).search(/\n(?:async )?function /);return src.slice(a,b<0?undefined:a+1+b)}
+function fn(n){
+ const m=new RegExp('(?:async )?function '+n+'\\s*\\([^)]*\\)\\s*\\{').exec(src);
+ if(!m)return '';
+ let depth=0;
+ for(let i=m.index+m[0].length-1;i<src.length;i++){
+  if(src[i]==='{')depth++;
+  else if(src[i]==='}'&&--depth===0)return src.slice(m.index,i+1);
+ }
+ return '';
+}
 const at=(day,h=12,m=0)=>new Date(2026,10,day,h,m).getTime();
 const now=at(12,9);
 function harness(service){
@@ -16,7 +25,7 @@ function harness(service){
  let observations=pins.map(p=>({id:p.id,found:true,time:'вчера',count:0,mentions:0}));
  state.svcViews[service]={isConnected:true,addEventListener(){},executeJavaScript:async source=>{new vm.Script(source);return JSON.stringify({favs:observations,svcTotals:{total:0,mentions:0}})}};
  const ctx=vm.createContext({state,Date:Clock,console,setTimeout,clearTimeout,document:{querySelector(){return null}},favoritesOf:()=>state.cfg.pinned,svcViewFor:()=>state.svcViews[service],updateBadge(){},updateBadge2(){},renderChatList(){},scheduleActSave(){},mmTabCounts:async()=>{},mmLastPosts:async()=>{},tgSearchResolve:async()=>null,__chatHubGrabAvatar:function(){},formatMaxPreview:function(){},UNREAD_EXTRACTORS:{[service]:function(){}}});
- for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','parseChatTime','fmtChatWhen','sortFavoritesByActivity','mergeLastMessageTime','activitySnapshot','ensureKeys','restorePreviewAuthor'])vm.runInContext(fn(n),ctx);
+ for(const n of ['__chatHubScanRows','__chatHubBoundedAvatar','tabBadgeTotal','runUnreadJob','unreadViewState','unreadGuestCall','pollUnread','pollUnreadService','refreshUnreadPresentation','unreadDeltaFor','shouldBumpLiveAct','shouldMergeDomTime','parseChatTime','fmtChatWhen','sortFavoritesByActivity','mergeLastMessageTime','activitySnapshot','ensureKeys','restorePreviewAuthor'])vm.runInContext(fn(n),ctx);
  return {ctx,state,set(rows){observations=rows}};
 }
 for(const service of ['mm','tg','max','ydx'])test(service+': midnight order and verified provenance survive restart and missing/day-only refresh',async()=>{
@@ -81,9 +90,9 @@ test('startup sorts restored Telegram activity before the first background poll'
    window:{hub:{getConfig:async()=>cfg,saveConfig:async()=>{}}},
    document:{querySelector(){return null},getElementById(){return null},addEventListener(){}},
    setInterval(){return 0},setTimeout(){return 0},clearTimeout(){},
-   buildTabs(){},applyTheme(){},applyLayout(){},applyBadgeVisibility(){},refreshTabIcons(){},refreshUnreadPresentation(){},activateTab(){},initListSplitter(){},
+   buildTabs(){},applyTheme(){},applyLayout(){},applyBadgeVisibility(){},applyFavouriteDensity(){},refreshTabIcons(){},refreshUnreadPresentation(){},activateTab(){},initListSplitter(){},
    renderChatList(){rendered++}});
- for(const n of ['restorePreviewAuthor','ensureKeys','sortFavoritesByActivity','init'])vm.runInContext(fn(n),ctx);
+ for(const n of ['cloneConfigForSave','queueConfigSave','saveConfig','restorePreviewAuthor','ensureKeys','sortFavoritesByActivity','init'])vm.runInContext(fn(n),ctx);
  await ctx.init();
  assert.deepEqual(state.cfg.pinned.map(p=>p.id),['newer','older']);
  assert.equal(rendered,1);
