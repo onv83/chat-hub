@@ -882,7 +882,13 @@ function activateTab(id) {
     if (!view) continue
     try { Promise.resolve(view.executeJavaScript('window.__hubVirtualSweepBlocked = ' + (id === 'svc:' + serviceId))).catch(() => {}) } catch {}
   }
-  if (svc && wv && !built && !wv.dataset.loadedSrc) enqueueLoad(wv, initialSvcUrl(svc), true)
+  // Глубокая ссылка из ↗ имеет приоритет над базовым адресом: иначе отложенная
+  // загрузка (initialSvcUrl — для TG корень без чата) перетирала её, и Telegram
+  // открывался на «Кому хотите написать». Флаг ставит только openInServiceTab
+  // и живёт ровно до этой постановки в очередь.
+  const pendingUrl = wv && wv.__hubPendingUrl
+  if (wv && pendingUrl) delete wv.__hubPendingUrl
+  if (svc && wv && !built && !wv.dataset.loadedSrc) enqueueLoad(wv, pendingUrl || initialSvcUrl(svc), true)
   // «Сборная» и «Настройки» — это только выбор вкладки, а не безопасный простой:
   // сервисные вьюхи здесь не выгружаются (это делает лишь таймер простоя).
   if (id === 'settings') buildSettings(sec)
@@ -2129,6 +2135,8 @@ function selectChat(pinId, opts) {
   // открыл чат ЯВНО (клик) → его «новые» обнуляются. Автовыбор при старте/
   // перерисовке списка базу не трогает — иначе счётчик исчезает при рестарте.
   if (opts.markRead !== false && state.unreadTotals && state.unreadTotals[pinId]) {
+    const clearedC = state.unreadTotals[pinId].c || 0
+    const clearedM = state.unreadTotals[pinId].m || 0
     state.unreadBaseC = state.unreadBaseC || {}
     state.unreadBaseM = state.unreadBaseM || {}
     state.unreadBaseC[pinId] = state.unreadTotals[pinId].c || 0
@@ -2136,6 +2144,42 @@ function selectChat(pinId, opts) {
     state.cfg.activity = state.cfg.activity || {}
     state.cfg.activity.unreadBaseC = { ...state.unreadBaseC }
     state.cfg.activity.unreadBaseM = { ...state.unreadBaseM }
+    // Гасим цифру СРАЗУ, не дожидаясь перерисовки скрытой сервисной вкладки:
+    // её DOM обновляется, только когда вкладку активируют. Базы тоже 0 — иначе
+    // после нуля появились бы отрицательные дельты прошлого запаса.
+    state.unreadTotals[pinId] = { c: 0, m: 0 }
+    state.unreadTotalsAt = state.unreadTotalsAt || {}
+    state.unreadTotalsAt[pinId] = Date.now()
+    state.unreadDots = state.unreadDots || {}
+    state.unreadDots[pinId] = false
+    state.unreadBaseC[pinId] = 0
+    state.unreadBaseM[pinId] = 0
+    state.cfg.activity.unreadBaseC[pinId] = 0
+    state.cfg.activity.unreadBaseM[pinId] = 0
+    // Строка избранного — существующей функцией отрисовки бейджа.
+    const row = document.querySelector('.chat-row[data-pin="' + pinId + '"]')
+    if (row) setRowBadge(row, { count: 0, mentions: 0, unread: false })
+    // Бейдж вкладки сервиса — существующей updateBadge2: вычитаем из
+    // последнего итога только что погашенное (ниже нуля не опускаем).
+    // MM живёт на своих API-счётчиках (mmTabCounts) и сюда не входит.
+    const tabTotal = state.svcTabTotals && state.svcTabTotals[svc.id]
+    if (tabTotal && svc.id !== 'mm' && typeof updateBadge2 === 'function') {
+      const t = Math.max(0, (tabTotal.t || 0) - clearedC)
+      const m = Math.max(0, (tabTotal.m || 0) - clearedM)
+      state.svcTabTotals[svc.id] = { ...tabTotal, t, m }
+      updateBadge2(svc.id, t, m, tabTotal.partial === true)
+    }
+    // «Сборная» и значок панели задач — существующим пересчётом.
+    if (typeof refreshUnreadPresentation === 'function') refreshUnreadPresentation()
+    // Фоновое подтверждение тем же поллингом сервиса, что и по таймеру;
+    // вкладку НЕ активируем. Если мессенджер не отметил прочтение — цифра
+    // вернётся следующим замером.
+    if (typeof runUnreadJob === 'function' && typeof pollUnreadService === 'function') {
+      runUnreadJob('poll:' + svc.id, svc.id, async job => {
+        try { await pollUnreadService(svc, job) }
+        finally { if (typeof refreshUnreadPresentation === 'function') refreshUnreadPresentation() }
+      }).catch(() => {})
+    }
   }
   saveConfig(state.cfg)
   document.querySelectorAll('.chat-row').forEach(r => r.classList.toggle('selected', r.dataset.pin === pinId))
@@ -2391,13 +2435,90 @@ async function togglePin(pinId) {
   toast(p.priority ? '«' + p.title + '» закреплён наверху' : '«' + p.title + '» откреплён')
 }
 
-function openInServiceTab(p) {
-  activateTab('svc:' + p.serviceId)
-  const wv = state.svcViews[p.serviceId]
-  if (!wv) return
-  const go = () => { try { wv.loadURL(p.url) } catch {} }
-  if (wv.getURL() && wv.getURL() !== 'about:blank') { go(); return }
-  wv.addEventListener('dom-ready', go, { once: true })
+// Открытие чата из «Сборной» в сервисной вкладке. Глубокая ссылка должна
+// победить очередь базовой загрузки: pendingRequestedUrl (ставится ТОЛЬКО здесь)
+// заставляет activateTab поставить в очередь ссылку чата, а не корень сервиса.
+// Возвращает Promise<boolean> — достигнут ли запрошенный адрес; не отклоняется.
+async function openInServiceTab(p) {
+  try {
+    const existing = state.svcViews[p.serviceId]
+    if (existing) existing.__hubPendingUrl = p.url
+    activateTab('svc:' + p.serviceId)
+    const wv = state.svcViews[p.serviceId]
+    if (!wv) return false
+    const svc = state.cfg.services.find(s => s.id === p.serviceId)
+    // Очередь уже поставила именно эту ссылку — вторая навигация не нужна:
+    // две конкурирующие загрузки и были причиной пустого экрана Telegram.
+    const go = () => {
+      if (requestedUrlReached(svc, wv, p.url)) return
+      try { wv.loadURL(p.url) } catch {}
+    }
+    if (wv.getURL && wv.getURL() && wv.getURL() !== 'about:blank') go()
+    else if (typeof wv.addEventListener === 'function') wv.addEventListener('dom-ready', go, { once: true })
+    // Проверка и повтор — только Telegram: остальные сервисы открывают чат путём,
+    // одной загрузки глубокой ссылки им достаточно (поведение не меняем).
+    if (!svc || svc.id !== 'tg') return true
+    return await settleTgDeepLink(wv, p.url)
+  } catch { return false }
+}
+// hash TG-чата: #123, #@username, #-100…
+function tgChatHash(url) {
+  const m = String(url || '').match(/#([-\w@]+)/)
+  return m ? m[1] : null
+}
+// Достигнут ли адрес, запрошенный кнопкой ↗. Telegram живёт по hash: без него
+// открывается «Кому хотите написать», поэтому сверяем именно id/username.
+// Остальным сервисам hash не нужен — сравниваем href без завершающего слэша.
+function requestedUrlReached(svc, wv, target) {
+  const current = wv && typeof wv.getURL === 'function' ? String(wv.getURL() || '') : ''
+  if (!current) return false
+  if (svc && svc.id === 'tg') {
+    const want = tgChatHash(target)
+    return !!want && tgChatHash(current) === want
+  }
+  const norm = url => {
+    const s = String(url || '')
+    const at = s.indexOf('#')
+    const head = at >= 0 ? s.slice(0, at) : s
+    return head.replace(/\/+$/, '') + (at >= 0 ? s.slice(at) : '')
+  }
+  return norm(current) === norm(target)
+}
+// Ждём события загрузки webview не дольше timeoutMs; false по таймауту/сбою.
+function waitForServiceLoad(wv, timeoutMs) {
+  return new Promise(resolve => {
+    let settled = false
+    let timer = null
+    const done = ok => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try { wv.removeEventListener('did-finish-load', finish) } catch {}
+      try { wv.removeEventListener('did-fail-load', fail) } catch {}
+      try { wv.removeEventListener('did-navigate-in-page', finish) } catch {}
+      resolve(ok)
+    }
+    const finish = () => done(true)
+    const fail = () => done(false)
+    try {
+      if (typeof wv.addEventListener !== 'function') return done(false)
+      wv.addEventListener('did-finish-load', finish)
+      wv.addEventListener('did-fail-load', fail)
+      wv.addEventListener('did-navigate-in-page', finish)
+      timer = setTimeout(() => done(false), timeoutMs)
+    } catch { done(false) }
+  })
+}
+// Один повтор глубокой ссылки TG, если hash не удержался (базовая загрузка
+// успела позже). Ошибки глушим: ↗ не должен ронять обработчик клика.
+async function settleTgDeepLink(wv, target) {
+  if (!wv) return false
+  if (requestedUrlReached({ id: 'tg' }, wv, target)) return true
+  if (!(await waitForServiceLoad(wv, 5000))) return false
+  if (requestedUrlReached({ id: 'tg' }, wv, target)) return true
+  try { wv.loadURL(target) } catch { return false }
+  if (!(await waitForServiceLoad(wv, 5000))) return false
+  return requestedUrlReached({ id: 'tg' }, wv, target)
 }
 function sameViewUrl(current, target) {
   try { return new URL(String(current)).href === new URL(String(target)).href } catch {

@@ -290,6 +290,39 @@ test('old config without titleCustom does not gain the key on load or save', t =
   assert.equal(fs.readFileSync(f.target + '.bak', 'utf8'), initial)
 })
 
+test('pinned: смена title без titleCustom не добавляет провенанс, пустая строка остаётся строкой', t => {
+  // Пин из сборки, где titleCustom ещё не существовал: имя могло быть
+  // переименовано авто-переименованием, но провенанс «имя задал человек» не
+  // появляется — иначе следующая авто-правка перестала бы работать.
+  const initial = JSON.stringify({ services: [], pinned: [{ id: 'p', serviceId: 'mm', url: 'https://example.test/channel', title: 'Общий канал' }] })
+  const f = fixture(t, initial)
+  assert.ok(!('titleCustom' in f.get().pinned[0]))
+
+  const renamed = structuredClone(f.get())
+  renamed.pinned[0].title = 'Проект 14544'
+  assert.equal(f.save(renamed), true)
+  const saved = JSON.parse(fs.readFileSync(f.target, 'utf8'))
+  assert.equal(saved.pinned[0].title, 'Проект 14544')
+  assert.ok(!('titleCustom' in saved.pinned[0]), 'titleCustom не должен появиться из-за смены имени')
+  assert.equal(JSON.stringify(saved).includes('titleCustom'), false, 'ключа нет и в сыром JSON')
+  assert.equal(f.get().pinned[0].title, 'Проект 14544', 'новое имя читается обратно')
+  assert.ok(!('titleCustom' in f.get().pinned[0]))
+  assert.equal(fs.readFileSync(f.target + '.bak', 'utf8'), initial, 'бэкап хранит исходные байты')
+
+  // Пустая строка — валидное название (пользователь очистил поле), не null:
+  // null в title превратил бы весь конфиг в повреждённый при следующей загрузке.
+  const cleared = structuredClone(f.get())
+  cleared.pinned[0].title = ''
+  assert.equal(f.save(cleared), true)
+  const clearedSaved = JSON.parse(fs.readFileSync(f.target, 'utf8')).pinned[0]
+  assert.equal(clearedSaved.title, '')
+  assert.equal('title' in clearedSaved, true, 'ключ title остаётся, а не исчезает')
+  assert.notEqual(clearedSaved.title, null)
+  assert.equal('titleCustom' in clearedSaved, false)
+  assert.equal(f.get().pinned[0].title, '', 'пустая строка читается как пустая строка')
+  assert.equal(f.get().pinned[0].title, '')
+})
+
 test('favourite row density settings accept only the documented values', t => {
   const initial = JSON.stringify({ services: [], pinned: [], favAvatarSize: 'medium', favPreviewVisible: false, favPreviewLines: 1, favCommentVisible: false, favCommentStyle: 'title', favCommentPlacement: 'inline' })
   const f = fixture(t, initial)

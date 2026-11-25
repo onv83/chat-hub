@@ -125,6 +125,9 @@ function fixture(t, options = {}) {
   }
 
   const sessions = new Map()
+  // nativeTheme — общий объект: тест темы проверяет, что main меняет источник
+  // не только в конфиге, но и в Electron.
+  const nativeTheme = {}
   const electron = {
     app: {
       commandLine: { appendSwitch() {} },
@@ -139,7 +142,7 @@ function fixture(t, options = {}) {
     BrowserWindow: FakeWindow,
     ipcMain: { handle: (name, fn) => handlers.set(name, fn) },
     dialog,
-    nativeTheme: {},
+    nativeTheme,
     Menu: { setApplicationMenu() {} },
     shell: { openExternal() {} },
     session: {
@@ -183,7 +186,7 @@ function fixture(t, options = {}) {
   }
 
   return {
-    dir, appDir, profileDir, tmpDir, handlers, appHandlers, order, windows, progress, spawns, children, timers,
+    dir, appDir, profileDir, tmpDir, handlers, appHandlers, order, windows, progress, spawns, children, timers, nativeTheme,
     dialogState, registryState, execState, shellEvent, foreignEvent, shellUrl, saveState,
     get config() { return handlers.get('config:get')(shellEvent) },
     invoke: (channel, ...args) => {
@@ -439,17 +442,15 @@ test('mcpExport: таймаут экспорта убивает дерево и 
 })
 
 test('mcpConnectorStatus: установленный коннектор из реестра, отсутствующий и невалидный сервис', async t => {
-  // Путь строим от домашнего каталога, чтобы тест не зависел от имени пользователя.
-  const mmExe = path.win32.join(os.homedir(), 'mcp', 'mm', 'run.exe').replace(/\\/g, '/')
   const registry = {
     version: 1,
     connectors: {
-      mm: { mode: 'existing', command: mmExe, args: [], env: {}, tools: ['mmchat_read_channel'] }
+      mm: { mode: 'existing', command: 'C:/Users/Lenovo/mcp/mm/run.exe', args: [], env: {}, tools: ['mmchat_read_channel'] }
     }
   }
   const f = fixture(t, { config: { services: [], pinned: [] }, registry })
   const mm = await f.invoke('mcp:connector-status', 'mm')
-  assert.deepEqual(plain(mm), { service: 'mm', installed: true, path: mmExe, mode: 'existing', tools: ['mmchat_read_channel'] })
+  assert.deepEqual(plain(mm), { service: 'mm', installed: true, path: 'C:/Users/Lenovo/mcp/mm/run.exe', mode: 'existing', tools: ['mmchat_read_channel'] })
   const max = await f.invoke('mcp:connector-status', 'max')
   assert.deepEqual(plain(max), { service: 'max', installed: false, path: null, mode: null, tools: [] })
   for (const bad of ['tg', '', null, 7]) {
@@ -522,6 +523,118 @@ test('preload: мост отдаёт четыре метода и прогрес
   assert.deepEqual(received, [{ event: 'connector_start' }])
   unsubscribe()
   assert.equal((listeners.get('mcp:progress') || []).length, 0)
+})
+
+// --- Каналы окна-оболочки: версия, путь конфига, тема, фокус, память сервисов ---
+// Эти каналы не относятся к MCP-экспорту, но живут в том же preload-мосте и под
+// тем же requireShellSender: мета-тест покрытия находит их среди ipcMain.handle,
+// поэтому здесь фиксируется и их контракт.
+
+test('preload: каждый метод моста вызывает ровно свой канал', () => {
+  // Карта — исполняемая спецификация моста: имя метода → [канал, аргумент].
+  // onMcpProgress в invoke-карту не входит: это подписка, а не вызов.
+  const expected = {
+    getConfig: ['config:get', undefined],
+    saveConfig: ['config:save', { theme: 'light' }],
+    configPath: ['config:path', undefined],
+    reportTelemostConnection: ['diagnostics:telemost-connection', { ok: true }],
+    getVersion: ['app:version', undefined],
+    setThemeSource: ['theme:set-source', 'light'],
+    isWinFocused: ['win:focused', undefined],
+    getServiceMemoryMetrics: ['service-memory:metrics', undefined],
+    mcpChooseDir: ['mcp:choose-dir', undefined],
+    mcpConnectorStatus: ['mcp:connector-status', 'mm'],
+    mcpConnectorInstall: ['mcp:connector-install', 'mm'],
+    mcpConnectorConnect: ['mcp:connector-connect', 'max'],
+    mcpProbe: ['mcp:probe', 'ydx'],
+    mcpExport: ['mcp:export', undefined],
+    mcpCancel: ['mcp:cancel', undefined],
+    favoritesExport: ['favorites:export', undefined]
+  }
+  const listeners = new Map()
+  const invoked = []
+  let exposed = null
+  const ipcRenderer = {
+    invoke: (...args) => { invoked.push(args); return Promise.resolve(null) },
+    on(channel, callback) { listeners.set(channel, [...(listeners.get(channel) || []), callback]) },
+    removeListener(channel, callback) {
+      listeners.set(channel, (listeners.get(channel) || []).filter(item => item !== callback))
+    }
+  }
+  vm.runInNewContext(preloadSource, {
+    require: name => name === 'electron' ? { contextBridge: { exposeInMainWorld: (key, api) => { exposed = { key, api } } }, ipcRenderer } : realRequire(name),
+    Promise,
+    console
+  })
+  assert.equal(exposed.key, 'hub')
+  const hub = exposed.api
+  // Дрейф в обе стороны: лишний метод моста и пропавший метод одинаково ломают UI.
+  assert.deepEqual(Object.keys(hub).sort(), [...Object.keys(expected), 'onMcpProgress'].sort())
+  for (const [name, [channel, arg]] of Object.entries(expected)) {
+    assert.equal(typeof hub[name], 'function', 'preload не отдаёт ' + name)
+    hub[name](arg)
+    const last = invoked[invoked.length - 1]
+    assert.equal(last[0], channel, name + ' должен звать ' + channel)
+    if (arg === undefined) assert.equal(last.length, 1, name + ' не должен передавать аргументы')
+    else assert.deepEqual(last.slice(1), [arg], name + ' передаёт аргумент как есть')
+  }
+  assert.equal(typeof hub.onMcpProgress, 'function')
+  assert.equal(invoked.length, Object.keys(expected).length)
+})
+
+test('shell IPC: config:path и app:version отвечают только оболочке', async t => {
+  const f = fixture(t, { config: { services: [], pinned: [] } })
+  assert.equal(f.invoke('config:path'), path.join(f.profileDir, 'config.json'))
+  assert.equal(f.invoke('app:version'), '0.3.5')
+  for (const channel of ['config:path', 'app:version']) {
+    const { error, value } = await f.callAs(channel, f.foreignEvent)
+    assert.ok(error, channel + ' должен отказать чужому sender')
+    assert.match(String(error.message), /Unauthorized IPC sender/)
+    assert.equal(value, undefined)
+  }
+})
+
+test('shell IPC: theme:set-source меняет тему конфига и nativeTheme, мусор тему не двигает', async t => {
+  const f = fixture(t, { config: { services: [], pinned: [], theme: 'dark' } })
+  assert.equal(f.invoke('theme:set-source', 'light'), true)
+  assert.equal(f.config.theme, 'light', 'тема сохранена в конфиге')
+  assert.equal(f.nativeTheme.themeSource, 'light', 'Electron получил источник темы')
+  assert.equal(f.invoke('theme:set-source', 'dark'), true)
+  assert.equal(f.config.theme, 'dark')
+  assert.equal(f.nativeTheme.themeSource, 'dark')
+  // Неизвестное значение не выбирает тему конфига: остаётся прежняя.
+  assert.equal(f.invoke('theme:set-source', 'sepia'), true)
+  assert.equal(f.config.theme, 'dark')
+  const { error } = await f.callAs('theme:set-source', f.foreignEvent, 'light')
+  assert.ok(error)
+  assert.match(String(error.message), /Unauthorized IPC sender/)
+  assert.equal(f.config.theme, 'dark', 'чужой sender тему не переключил')
+})
+
+test('shell IPC: win:focused отражает настоящее окно, а не документ renderer', async t => {
+  const f = fixture(t, { config: { services: [], pinned: [] } })
+  assert.ok(f.windows.length >= 1, 'окно-оболочка должна существовать')
+  assert.equal(f.invoke('win:focused'), true, 'окно сфокусировано')
+  for (const win of f.windows) win.isFocused = () => false
+  assert.equal(f.invoke('win:focused'), false, 'фокус ушёл в webview — окно не в фокусе')
+  f.windows[f.windows.length - 1].isFocused = () => true
+  assert.equal(f.invoke('win:focused'), true)
+  const { error } = await f.callAs('win:focused', f.foreignEvent)
+  assert.ok(error)
+  assert.match(String(error.message), /Unauthorized IPC sender/)
+})
+
+test('shell IPC: service-memory:metrics отдаёт санированный снимок без аргументов', async t => {
+  const f = fixture(t, { config: { services: [], pinned: [] } })
+  // Метрик ещё нет — снимок обязан быть пустым, но правильной формы: без
+  // порогов, cooldown и прочих внутренних полей, и без доверия аргументам.
+  const empty = plain(f.invoke('service-memory:metrics', { pid: 1, url: 'https://evil.example/' }))
+  assert.deepEqual(empty, { services: [], totalMiB: 0 })
+  assert.deepEqual(Object.keys(empty).sort(), ['services', 'totalMiB'])
+  const { error, value } = await f.callAs('service-memory:metrics', f.foreignEvent)
+  assert.ok(error)
+  assert.match(String(error.message), /Unauthorized IPC sender/)
+  assert.equal(value, undefined)
 })
 
 // --- M7: установка, подключение и проверка коннекторов ---

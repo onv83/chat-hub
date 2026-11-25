@@ -301,6 +301,106 @@ test('Таблица экранирует разделители и перено
   assert.ok(!output.includes('<b>secret</b>'))
 })
 
+// --- LINK-DEDUP: URL, уже присутствующий в тексте, не печатается второй раз ---
+
+function messageRow(output, marker) {
+  return output.split('\n').find(line => line.includes(marker)) || ''
+}
+
+function countOccurrences(haystack, needle) {
+  return haystack.split(needle).length - 1
+}
+
+function singleMessage(messages) {
+  return [section({ messages })]
+}
+
+test('LINK-DEDUP: URL, который уже есть в тексте, не добавляется из links повторно', () => {
+  const { renderProjectFile } = core('markdown')
+  const output = renderProjectFile({
+    project: '14544', exportedAt: '2026-11-23T11:45:00+07:00', depthDays: 7,
+    chatSections: singleMessage([{
+      service: 'mm', chatId: 'team/general', messageId: 'm1', author: 'Иван',
+      timestamp: Date.parse('2026-11-23T04:05:09Z'),
+      text: 'смотри https://example.test/doc и всё',
+      links: ['https://example.test/doc']
+    }])
+  })
+  const row = messageRow(output, 'm1')
+  assert.ok(row, 'строка сообщения не найдена:\n' + output)
+  assert.equal(countOccurrences(row, 'https://example.test/doc'), 1, 'URL напечатан дважды: ' + row)
+  // Сам текст не переписывается: ссылка остаётся на своём месте.
+  assert.ok(row.includes('| смотри https://example.test/doc и всё |'), 'текст сообщения изменился: ' + row)
+})
+
+test('LINK-DEDUP: ссылки, которых нет в тексте, добавляются каждая по одному разу', () => {
+  const { renderProjectFile } = core('markdown')
+  const output = renderProjectFile({
+    project: '14544', exportedAt: '2026-11-23T11:45:00+07:00', depthDays: 7,
+    chatSections: singleMessage([{
+      service: 'mm', chatId: 'team/general', messageId: 'm2', author: 'Пётр',
+      timestamp: Date.parse('2026-11-23T04:05:09Z'),
+      text: 'файлы во вложении',
+      links: ['https://example.test/a', 'https://example.test/b']
+    }])
+  })
+  const row = messageRow(output, 'm2')
+  assert.ok(row.includes('| файлы во вложении https://example.test/a https://example.test/b |'), 'порядок и состав ссылок изменились: ' + row)
+  assert.equal(countOccurrences(row, 'https://example.test/a'), 1, 'ссылка a напечатана не один раз: ' + row)
+  assert.equal(countOccurrences(row, 'https://example.test/b'), 1, 'ссылка b напечатана не один раз: ' + row)
+})
+
+test('LINK-DEDUP: повторяющиеся ссылки внутри links печатаются один раз', () => {
+  const { renderProjectFile } = core('markdown')
+  const output = renderProjectFile({
+    project: '14544', exportedAt: '2026-11-23T11:45:00+07:00', depthDays: 7,
+    chatSections: singleMessage([{
+      service: 'mm', chatId: 'team/general', messageId: 'm3', author: 'Аня',
+      timestamp: Date.parse('2026-11-23T04:05:09Z'),
+      text: 'обычный текст',
+      links: ['https://example.test/a', 'https://example.test/a', 'https://example.test/b']
+    }])
+  })
+  const row = messageRow(output, 'm3')
+  assert.equal(countOccurrences(row, 'https://example.test/a'), 1, 'дубль внутри links не убран: ' + row)
+  assert.equal(countOccurrences(row, 'https://example.test/b'), 1, 'ссылка b напечатана не один раз: ' + row)
+  assert.ok(row.includes('| обычный текст https://example.test/a https://example.test/b |'), 'ячейка собрана неверно: ' + row)
+})
+
+test('LINK-DEDUP: сравнение с текстом case-sensitive, регистр ссылки не нормализуется', () => {
+  const { renderProjectFile } = core('markdown')
+  const output = renderProjectFile({
+    project: '14544', exportedAt: '2026-11-23T11:45:00+07:00', depthDays: 7,
+    chatSections: singleMessage([{
+      service: 'mm', chatId: 'team/general', messageId: 'm4', author: 'Иван',
+      timestamp: Date.parse('2026-11-23T04:05:09Z'),
+      text: 'видел https://example.test/Doc',
+      links: ['https://example.test/doc']
+    }])
+  })
+  const row = messageRow(output, 'm4')
+  // Разный регистр — это разные URL: ссылка из links добавляется.
+  assert.equal(countOccurrences(row, 'https://example.test/doc'), 1, 'ссылка из links потерялась: ' + row)
+  assert.ok(row.includes('https://example.test/Doc'), 'текст сообщения изменился: ' + row)
+})
+
+test('LINK-DEDUP: сообщение без ссылок печатается как раньше', () => {
+  const { renderProjectFile } = core('markdown')
+  const output = renderProjectFile({
+    project: '14544', exportedAt: '2026-11-23T11:45:00+07:00', depthDays: 7,
+    chatSections: singleMessage([{
+      service: 'mm', chatId: 'team/general', messageId: 'm5', author: 'Иван',
+      timestamp: Date.parse('2026-11-23T04:05:09Z'),
+      text: 'просто текст без ссылок',
+      links: []
+    }])
+  })
+  assert.ok(
+    output.includes('| 2026-11-23 11:05 | Иван | просто текст без ссылок | m5 |'),
+    'сообщение без ссылок изменилось:\n' + output
+  )
+})
+
 test('Пустая секция не создаёт строку сообщения в таблице', () => {
   const { renderProjectFile } = core('markdown')
   const output = renderProjectFile({

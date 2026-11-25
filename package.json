@@ -1,7 +1,7 @@
 {
   "name": "chat-hub",
   "productName": "ChatHub",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Все мессенджеры в одном окне: Mattermost, Telegram, MAX, Телемост + сборная вкладка с закреплёнными чатами",
   "main": "main.js",
   "author": "ChatHub contributors",
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node scripts/start-branded.mjs",
     "postinstall": "node scripts/ensure-branded-launcher.mjs",
-    "test": "node --test tests/branded-launcher.mjs tests/telegram-aliases.mjs tests/unit.mjs tests/config-persistence.mjs tests/navigation-security.mjs tests/author-freshness.mjs tests/calendar-boundaries.mjs tests/message-order.mjs tests/guest-notification-policy.mjs tests/notification-broker.mjs tests/notification-ledger.mjs tests/telemost-safety.mjs tests/portable-path.mjs tests/service-memory-saver-config.test.js tests/service-memory-saver-renderer.test.js tests/mcp-export-core.mjs tests/mcp-favorites.mjs tests/mcp-bridge.mjs tests/mcp-adapters.mjs tests/mcp-ipc.mjs tests/mcp-registry.mjs",
+    "test": "node --test tests/branded-launcher.mjs tests/telegram-aliases.mjs tests/unit.mjs tests/config-persistence.mjs tests/navigation-security.mjs tests/author-freshness.mjs tests/calendar-boundaries.mjs tests/message-order.mjs tests/guest-notification-policy.mjs tests/notification-broker.mjs tests/notification-ledger.mjs tests/telemost-safety.mjs tests/portable-path.mjs tests/service-memory-saver-config.test.js tests/service-memory-saver-renderer.test.js tests/mcp-export-core.mjs tests/mcp-favorites.mjs tests/mcp-bridge.mjs tests/mcp-adapters.mjs tests/mcp-ipc.mjs tests/mcp-registry.mjs tests/mcp-coverage.mjs",
     "test:ui": "node --test tests/active-highlight-browser.mjs tests/mcp-tab-browser.mjs",
     "selfcheck": "node tests/selfcheck.mjs",
     "package:portable": "node scripts/package-portable.mjs"

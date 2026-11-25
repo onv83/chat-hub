@@ -10,6 +10,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const require = createRequire(import.meta.url)
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = fs.readFileSync(path.join(root, 'main.js'), 'utf8')
+// стаб child_process: main.js требует модуль при загрузке, spawn не нужен
+const childProcessStub = {
+  spawn: () => ({ stdout: { on() {} }, stderr: { on() {} }, on() {}, kill() {}, pid: 0, killed: false }),
+  execFile: () => {}
+}
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'chathub-navigation-'))
@@ -66,7 +71,7 @@ function fixture(t) {
     dialog: { showErrorBox() {}, showMessageBox: async () => ({ response: 1 }) }
   }
   const context = vm.createContext({
-    require(name) { return name === 'electron' ? electron : name === './guest-notification-policy' ? require('../guest-notification-policy') : require(name) },
+    require(name) { return name === 'electron' ? electron : name === 'child_process' ? childProcessStub : name === './guest-notification-policy' ? require('../guest-notification-policy') : require(name) },
     process: { env: {}, pid: process.pid, platform: process.platform, resourcesPath: '', execPath: '' },
     __dirname: root,
     console,

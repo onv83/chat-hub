@@ -138,7 +138,16 @@ function renderProjectFile({ project, exportedAt, depthDays, chatSections, chatR
     lines.push('|---|---|---|---|')
     for (const message of messages) {
       const links = Array.isArray(message.links) ? message.links : []
-      const textParts = [String(message.text ?? '').trim(), ...links.map(link => String(link))].filter(Boolean)
+      const rawText = String(message.text ?? '').trim()
+      // renderer кладёт в links URL, который часто уже остаётся в тексте, поэтому
+      // перед склейкой ссылки фильтруются: не добавляем ту, что уже встречается в
+      // тексте как подстрока (case-sensitive, регистр URL не нормализуем), и не
+      // повторяем ссылку, уже добавленную из links. Порядок первых вхождений сохранён.
+      const extraLinks = links
+        .map(link => String(link))
+        .filter(link => link && !rawText.includes(link))
+        .filter((link, index, all) => all.indexOf(link) === index)
+      const textParts = [rawText, ...extraLinks].filter(Boolean)
       const textWithLinks = textParts.join(' ')
       const stamp = message && message.dayOnly === true
         ? formatDateOnly(message.timestamp)

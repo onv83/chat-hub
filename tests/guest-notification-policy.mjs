@@ -7,6 +7,11 @@ import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(path.join(root, 'main.js'))
+// стаб child_process: main.js требует модуль при загрузке, spawn не нужен
+const childProcessStub = {
+  spawn: () => ({ stdout: { on() {} }, stderr: { on() {} }, on() {}, kill() {}, pid: 0, killed: false }),
+  execFile: () => {}
+}
 function fixture(t, initial) {
   const scratch = path.join(process.env.LOCALAPPDATA || path.dirname(root), 'hermes/cache/scratch')
   fs.mkdirSync(scratch, { recursive: true })
@@ -46,7 +51,7 @@ function fixture(t, initial) {
   }
   const imports = []
   vm.runInNewContext(fs.readFileSync(path.join(root, 'main.js'), 'utf8'), {
-    require(n) { imports.push(n); return n === 'electron' ? electron : require(n) },
+    require(n) { imports.push(n); return n === 'electron' ? electron : n === 'child_process' ? childProcessStub : require(n) },
     process: { env: {}, pid: process.pid, platform: process.platform }, __dirname: root,
     console, setTimeout, clearTimeout, setImmediate, URL
   })

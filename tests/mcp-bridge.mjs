@@ -1493,3 +1493,94 @@ test('buildReport: notes — только непустые строки, пор�
   })
   assert.deepEqual(report.notes, ['первая', 'вторая'])
 })
+
+// --- ШОВ сбор→мост→MD: prefetched реальной формы доезжает до файла ---
+// Здесь проверяется именно стык: renderer.js собирает сообщения MAX с полями
+// service/chatId/messageId/author/timestamp/dayOnly/text/links, main.js кладёт
+// их в manifest как chat.prefetched, мост пишет Markdown. Если форма собранного
+// сообщения и ожидания markdown.js разойдутся, файл потеряет время, ссылку или
+// напечатает служебные ярлыки — этот тест падает.
+test('ШОВ: prefetched реальной формы (дата-время, dayOnly, undated, ссылка) доезжает до MD', async t => {
+  const { runExport } = bridge('main')
+  const dir = tempDir(t)
+  const now = new Date('2026-11-23T12:00:00+07:00')
+  // Ровно та форма, которую строит renderer.js для MAX: ссылки уже вынуты из
+  // текста, у «дня без часа» timestamp — полночь и dayOnly: true, у сообщения
+  // без даты timestamp === null (не эпоха 0).
+  const collected = {
+    pinId: 'pmax',
+    service: 'max',
+    chatId: '/777',
+    title: 'MAX чат',
+    url: 'https://web.max.ru/777',
+    projects: ['14544'],
+    prefetched: {
+      messages: [
+        {
+          service: 'max',
+          chatId: '/777',
+          messageId: 'max:/777:0',
+          author: 'Иван',
+          timestamp: '2026-11-22T09:05:00+07:00',
+          dayOnly: false,
+          text: 'смотри https://example.test/doc',
+          links: ['https://example.test/doc']
+        },
+        {
+          service: 'max',
+          chatId: '/777',
+          messageId: 'max:/777:1',
+          author: 'Пётр',
+          timestamp: '2026-11-19T00:00:00+07:00',
+          dayOnly: true,
+          text: 'только день',
+          links: []
+        },
+        {
+          service: 'max',
+          chatId: '/777',
+          messageId: 'max:/777:2',
+          author: 'Аня',
+          timestamp: null,
+          dayOnly: false,
+          text: 'без даты',
+          links: []
+        }
+      ],
+      coverage: 'window',
+      status: 'ok',
+      code: null
+    }
+  }
+  const report = await runExport(manifest(dir, [collected]), { adapters: {}, now })
+  assert.equal(report.chats[0].status, 'ok')
+  assert.equal(report.chats[0].count, 3, 'все три сообщения доехали до отчёта')
+  assert.equal(report.chats[0].undated, 1, 'сообщение без даты посчитано отдельно')
+  assert.equal(report.files.length, 1)
+
+  const content = fs.readFileSync(report.files[0].path, 'utf8')
+  // Дата и время — для сообщения с точным часом. Ссылку мост печатает в той же
+  // ячейке, что и текст; renderer кладёт в links URL, уже содержащийся в text,
+  // поэтому мост обязан отфильтровать такой дубль — в ячейке ровно одна копия.
+  const row = content.split('\n').find(line => line.includes('max:/777:0'))
+  assert.ok(row, 'строка с датой и ссылкой не найдена:\n' + content)
+  assert.ok(row.includes('2026-11-22 09:05'), 'в строке нет даты и времени: ' + row)
+  assert.ok(row.includes('https://example.test/doc'), 'ссылка не доехала в ячейку: ' + row)
+  assert.equal(
+    row.split('https://example.test/doc').length - 1, 1,
+    'URL напечатан в ячейке больше одного раза: ' + row
+  )
+  assert.equal(row.split('|').length, 6, 'ссылка не должна ломать разметку таблицы: ' + row)
+  // Только дата — для dayOnly: полдень/полночь не выдумываем.
+  assert.ok(
+    content.includes('| 2026-11-19 | Пётр | только день | max:/777:1 |'),
+    'dayOnly должен печататься без времени:\n' + content
+  )
+  // Прочерк — для сообщения без даты.
+  assert.ok(
+    content.includes('| — | Аня | без даты | max:/777:2 |'),
+    'сообщение без даты должно получить прочерк:\n' + content
+  )
+  // Служебные ярлыки сбора не протекают в Markdown.
+  assert.equal(/attachment|reaction|sticker/i.test(content), false, 'в MD попали служебные слова сборщика')
+})

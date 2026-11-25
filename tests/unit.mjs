@@ -513,7 +513,8 @@ function startupSandbox(interactive = false) {
     lastUsed: {}, svcIcons: {}, lastMsgPreview: {}, lastMsgAt: {} }
   const noop = () => {}
   const ctx = sandbox(['init', 'saveConfig', 'queueConfigSave', 'cloneConfigForSave', 'activateTab', 'buildSection', 'initialSvcUrl',
-    'renderChatList', 'syncChatSelection', 'enqueueLoad', 'pumpPreload', 'openInServiceTab'], {
+    'renderChatList', 'syncChatSelection', 'enqueueLoad', 'pumpPreload', 'sameViewUrl', 'tgChatHash',
+    'requestedUrlReached', 'waitForServiceLoad', 'settleTgDeepLink', 'openInServiceTab'], {
     state, document,
     window: { hub: { getConfig: async () => ({ services, pinned, selectedPinId: pinned[0].id }), saveConfig: async () => {} } },
     ensureKeys: noop, sortFavoritesByActivity: noop, buildTabs: noop, applyTheme: noop, applyLayout: noop,
@@ -540,6 +541,7 @@ function startupSandbox(interactive = false) {
   vm.runInContext('const preloadQueue = []; let preloadBusy = false', ctx)
   return { ctx, state, services, loads, createdViews, timers, intervals, readRefreshes,
     queueSize: () => vm.runInContext('preloadQueue.length', ctx),
+    queueUrls: () => vm.runInContext('preloadQueue.map(job => job.url)', ctx),
     busy: () => vm.runInContext('preloadBusy', ctx),
     timeout() {
       const [id, timer] = timers.entries().next().value
@@ -1275,6 +1277,143 @@ for (const currentHash of ['', '#123']) {
     assert.equal(h.loads.at(-1).url, pin.url, 'explicit user navigation remains a deep link')
   })
 }
+
+// --- SERVICE-DEEPLINK: «↗ Открыть во вкладке мессенджера» -------------------
+// Глубокая ссылка не должна проигрывать отложенной загрузке базового адреса:
+// иначе Telegram открывает «Кому хотите написать» вместо выбранного чата.
+
+test('SERVICE-DEEPLINK: ↗ при ещё не загруженной вьюхе ставит в очередь глубокую ссылку, а не корень', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  // После init грузится только первая вьюха (mm): tg ждёт в очереди без loadedSrc.
+  assert.equal(h.state.svcViews.tg.dataset.loadedSrc, undefined)
+  const pin = h.state.cfg.pinned.find(p => p.serviceId === 'tg')
+  const done = h.ctx.openInServiceTab(pin)
+  // pendingRequestedUrl выставляется ДО activateTab и снимается постановкой в очередь.
+  assert.equal(h.queueUrls()[0], pin.url, 'в очередь встаёт ссылка пина, а не корень')
+  assert.equal(h.state.svcViews.tg.__hubPendingUrl, undefined, 'флаг одноразовый')
+  h.state.svcViews.mm.emit('dom-ready')          // очередь отдаёт ход TG
+  assert.equal(h.loads.at(-1).view, h.state.svcViews.tg)
+  assert.equal(h.loads.at(-1).url, pin.url, 'TG грузит именно глубокую ссылку')
+  h.state.svcViews.tg.emit('dom-ready')          // очередь уже загрузила ссылку — дубля нет
+  h.state.svcViews.tg.emit('did-finish-load')
+  assert.equal(await done, true)
+  assert.equal(h.state.svcViews.tg.getURL(), pin.url)
+  const tgLoads = h.loads.filter(load => load.view === h.state.svcViews.tg)
+  assert.deepEqual(tgLoads.map(load => load.url), [pin.url], 'ровно одна загрузка глубокой ссылки')
+  assert.equal([...h.timers.values()].filter(t => t.delay === 5000).length, 0, 'ожидание загрузки сняло свой таймер')
+})
+
+test('SERVICE-DEEPLINK: ↗ на уже загруженной вьюхе — одна загрузка ссылки пина, без повторов', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  for (const svc of h.services) h.state.svcViews[svc.id].emit('dom-ready')
+  const pin = h.state.cfg.pinned.find(p => p.serviceId === 'mm')
+  const before = h.loads.length
+  assert.equal(await h.ctx.openInServiceTab(pin), true)
+  assert.deepEqual(h.loads.slice(before).map(load => load.url), [pin.url])
+  assert.equal(h.queueSize(), 0, 'очередь не участвует')
+  assert.equal(h.state.svcViews.mm.__hubPendingUrl, undefined)
+})
+
+test('SERVICE-DEEPLINK: ↗ на невыгруженной вьюхе MAX — одна загрузка глубокой ссылки, без базовой', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  const pin = h.state.cfg.pinned.find(p => p.serviceId === 'max')
+  assert.equal(h.state.svcViews.max.dataset.loadedSrc, undefined)
+  const done = h.ctx.openInServiceTab(pin)
+  h.state.svcViews.mm.emit('dom-ready')   // очередь отдаёт ход TG
+  h.state.svcViews.tg.emit('dom-ready')   // затем MAX
+  assert.equal(h.loads.at(-1).view, h.state.svcViews.max)
+  assert.equal(h.loads.at(-1).url, pin.url)
+  h.state.svcViews.max.emit('dom-ready')  // глубокая ссылка уже загружена — дубля нет
+  assert.equal(await done, true)
+  const maxLoads = h.loads.filter(load => load.view === h.state.svcViews.max)
+  assert.deepEqual(maxLoads.map(load => load.url), [pin.url], 'базовая загрузка не уходит вовсе')
+})
+
+test('SERVICE-DEEPLINK: базовый адрес перетёр ссылку TG — ровно один повтор и успех', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  for (const svc of h.services) h.state.svcViews[svc.id].emit('dom-ready')
+  const wv = h.state.svcViews.tg
+  const pin = h.state.cfg.pinned.find(p => p.serviceId === 'tg')
+  const calls = []
+  // Первая загрузка приходит базовым адресом (так ведёт себя webk), повтор — глубокой ссылкой.
+  wv.loadURL = function (url) {
+    calls.push(url)
+    this.attributes.src = calls.length === 1 ? 'https://tg.example/' : url
+    return Promise.resolve()
+  }
+  const done = h.ctx.openInServiceTab(pin)
+  assert.deepEqual(calls, [pin.url], 'первая загрузка — глубокая ссылка')
+  h.state.svcViews.tg.emit('did-finish-load')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls, [pin.url, pin.url], 'ровно один повтор')
+  h.state.svcViews.tg.emit('did-finish-load')
+  assert.equal(await done, true)
+  assert.equal(wv.getURL(), pin.url)
+  assert.equal(h.timers.size, 0)
+})
+
+test('SERVICE-DEEPLINK: неудавшийся повтор TG завершает открытие без исключения', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  for (const svc of h.services) h.state.svcViews[svc.id].emit('dom-ready')
+  const wv = h.state.svcViews.tg
+  const pin = h.state.cfg.pinned.find(p => p.serviceId === 'tg')
+  const calls = []
+  wv.loadURL = function (url) { calls.push(url); this.attributes.src = 'https://tg.example/'; return Promise.resolve() }
+  const done = h.ctx.openInServiceTab(pin)
+  h.state.svcViews.tg.emit('did-finish-load')
+  await new Promise(resolve => setImmediate(resolve))
+  h.state.svcViews.tg.emit('did-finish-load')
+  let result
+  await assert.doesNotReject(async () => { result = await done })
+  assert.equal(result, false)
+  assert.equal(calls.length, 2, 'больше одного повтора нет')
+  assert.equal(h.timers.size, 0)
+})
+
+test('SERVICE-DEEPLINK: обычное переключение вкладки не выставляет pendingRequestedUrl', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  const tg = h.state.svcViews.tg
+  h.ctx.activateTab('svc:tg')
+  assert.equal(tg.__hubPendingUrl, undefined, 'флаг ставит только ↗')
+  assert.equal(h.queueUrls()[0], 'https://tg.example/', 'в очередь идёт корень без hash')
+})
+
+test('SERVICE-DEEPLINK: автостарт TG по-прежнему грузит корень без hash', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  for (const svc of h.services) h.state.svcViews[svc.id].emit('dom-ready')
+  const tgLoads = h.loads.filter(load => load.view === h.state.svcViews.tg)
+  assert.deepEqual(tgLoads.map(load => load.url), ['https://tg.example/'])
+  assert.equal(h.state.svcViews.tg.getURL().includes('#'), false)
+})
+
+test('SERVICE-DEEPLINK: сверка адреса MM/MAX/YDX не требует hash и не путает чаты', () => {
+  const h = startupSandbox()
+  const view = url => ({ getURL: () => url })
+  assert.equal(h.ctx.requestedUrlReached({ id: 'mm' }, view('https://mm.example/team/channels/room'), 'https://mm.example/team/channels/room/'), true)
+  assert.equal(h.ctx.requestedUrlReached({ id: 'max' }, view('https://max.example/chat/1'), 'https://max.example/chat/1'), true)
+  assert.equal(h.ctx.requestedUrlReached({ id: 'ydx' }, view('https://telemost.yandex.ru/chats/abc'), 'https://telemost.yandex.ru/chats/abc'), true)
+  assert.equal(h.ctx.requestedUrlReached({ id: 'mm' }, view('https://mm.example/team/channels/room'), 'https://mm.example/team/channels/other'), false)
+  assert.equal(h.ctx.requestedUrlReached({ id: 'max' }, view('https://max.example/chat/1'), 'https://max.example/chat/2'), false)
+  assert.equal(h.ctx.requestedUrlReached({ id: 'tg' }, view('https://web.telegram.org/k/'), 'https://web.telegram.org/k/#123'), false, 'TG без hash — не тот же адрес')
+})
+
+test('SERVICE-DEEPLINK: ↗ при уже совпавшем адресе MM не перезагружает вьюху', async () => {
+  const h = startupSandbox()
+  await h.ctx.init()
+  for (const svc of h.services) h.state.svcViews[svc.id].emit('dom-ready')
+  const pin = h.state.cfg.pinned.find(p => p.serviceId === 'mm')
+  h.state.svcViews.mm.attributes.src = pin.url
+  const before = h.loads.length
+  assert.equal(await h.ctx.openInServiceTab(pin), true)
+  assert.equal(h.loads.length, before, 'совпавший адрес не перезагружается')
+})
 
 test('rebuilt tabs immediately redraw saved service and favourite badges', async () => {
   const h = startupSandbox()
@@ -5755,4 +5894,229 @@ test('Избранное: кнопка выгрузки остаётся дос�
   assert.match(host.innerHTML, /Пока ничего в избранном/)
   const controls = host.children[host.children.length - 1]
   assert.equal(controls.children[0].id, 'fav-export-md')
+})
+
+/* ---------- TG-READ-BADGE: гашение непрочитанного при явном открытии ---------- */
+
+// Мини-стенд selectChat: настоящие selectChat/setRowBadge и одна строка
+// избранного с бейджем. Обновления строки, вкладки сервиса и фоновый
+// пересчёт фиксируются существующими точками вызова.
+function readBadgeFixture() {
+  const tabs = [], presentations = [], polls = [], reads = [], saved = []
+  const services = [{ id: 'tg', name: 'Telegram', url: 'https://web.telegram.org/k/', partition: 'persist:tg' }]
+  const pin = { id: 'pin-tg', serviceId: 'tg', title: 'Чат', url: 'https://web.telegram.org/k/#123' }
+  const state = {
+    cfg: { pinned: [pin], services, selectedPinId: '', activity: {} },
+    activePinId: '',
+    lastUsed: {},
+    unreadTotals: { 'pin-tg': { c: 4, m: 1 } },
+    unreadTotalsAt: {},
+    unreadBaseC: {},
+    unreadBaseM: {},
+    unreadDots: { 'pin-tg': true },
+    svcTabTotals: { tg: { t: 9, m: 2 } },
+    pinViews: {}
+  }
+  const classList = { hidden: false, mention: false,
+    toggle(name, on) { if (name === 'hidden') this.hidden = !!on; if (name === 'mention') this.mention = !!on } }
+  const badge = { textContent: '', classList }
+  const row = { dataset: { pin: pin.id }, classList: { toggle() {} },
+    querySelector: sel => sel === '.row-badge' ? badge : null }
+  const document = {
+    querySelector: sel => sel === '.chat-row[data-pin="pin-tg"]' ? row : null,
+    querySelectorAll: sel => sel === '.chat-row' ? [row] : []
+  }
+  const view = { dataset: {}, classList: { toggle() {} }, focus() {}, executeJavaScript() {} }
+  const ctx = sandbox(['selectChat', 'setRowBadge'], {
+    state, document, saveConfig: cfg => saved.push(cfg),
+    ensurePinView: () => view, enqueueLoad() {}, trimPinViews() {}, renderViewHead() {}, syncChatSelection() {},
+    queueSelectedUnread: id => { reads.push(id); return Promise.resolve() },
+    refreshUnreadPresentation: () => presentations.push(1),
+    updateBadge2: (...args) => tabs.push(args),
+    runUnreadJob: (key, svcId) => { polls.push([key, svcId]); return Promise.resolve() },
+    pollUnreadService: async () => {}
+  })
+  ctx.setRowBadge(row, { count: 4, mentions: 1, unread: true })
+  return { ctx, state, row, badge, tabs, presentations, polls, reads, saved }
+}
+
+test('TG-READ-BADGE: явное открытие гасит счётчик сразу, строка и вкладка перерисованы', () => {
+  const f = readBadgeFixture()
+  assert.equal(f.badge.textContent, '@1', 'до открытия строка показывает непрочитанное')
+  f.ctx.selectChat('pin-tg')
+  assert.equal(f.state.unreadTotals['pin-tg'].c, 0, 'факт непрочитанного погашен оптимистично')
+  assert.equal(f.state.unreadTotals['pin-tg'].m, 0)
+  assert.ok(Number.isFinite(f.state.unreadTotalsAt['pin-tg']), 'отметка замера обновлена')
+  assert.equal(f.state.unreadBaseC['pin-tg'], 0, 'база count обнулена вместе с фактом')
+  assert.equal(f.state.unreadBaseM['pin-tg'], 0, 'база mentions обнулена вместе с фактом')
+  assert.equal(f.state.cfg.activity.unreadBaseC['pin-tg'], 0, 'нулевая база сохранена в конфиг')
+  assert.equal(f.state.cfg.activity.unreadBaseM['pin-tg'], 0)
+  assert.equal(f.state.unreadDots['pin-tg'], false, 'точка непрочитанного тоже гаснет')
+  assert.equal(f.badge.textContent, '')
+  assert.equal(f.badge.classList.hidden, true, 'строка избранного перерисована без бейджа')
+  assert.deepEqual(f.tabs, [['tg', 5, 1, false]], 'бейдж вкладки сервиса уменьшен на погашенное')
+  assert.equal(f.state.svcTabTotals.tg.t, 5)
+  assert.equal(f.state.svcTabTotals.tg.m, 1)
+  assert.equal(f.presentations.length, 1, 'общий бейдж пересчитан существующей функцией')
+  assert.deepEqual(f.polls, [['poll:tg', 'tg']], 'фоновый пересчёт того же сервиса запущен')
+  assert.deepEqual(f.reads, ['pin-tg'], 'проверка прочтения выбранного чата не отменена')
+})
+
+test('TG-READ-BADGE: автовыбор (markRead=false) не трогает счётчики', () => {
+  const f = readBadgeFixture()
+  f.ctx.selectChat('pin-tg', { markRead: false })
+  assert.equal(f.state.unreadTotals['pin-tg'].c, 4)
+  assert.equal(f.state.unreadTotals['pin-tg'].m, 1)
+  assert.equal(f.state.unreadBaseC['pin-tg'], undefined)
+  assert.equal(f.state.unreadBaseM['pin-tg'], undefined)
+  assert.equal(f.state.unreadDots['pin-tg'], true)
+  assert.equal(f.badge.textContent, '@1')
+  assert.equal(f.presentations.length, 0)
+  assert.equal(f.tabs.length, 0)
+  assert.equal(f.polls.length, 0)
+  assert.equal(f.reads.length, 0)
+})
+
+test('TG-READ-BADGE: повторное открытие того же чата без новых непрочитанных ничего не ломает', () => {
+  const f = readBadgeFixture()
+  f.ctx.selectChat('pin-tg')
+  f.ctx.selectChat('pin-tg')
+  assert.equal(f.state.unreadTotals['pin-tg'].c, 0)
+  assert.equal(f.state.unreadTotals['pin-tg'].m, 0)
+  assert.equal(f.state.unreadBaseC['pin-tg'], 0)
+  assert.equal(f.state.unreadBaseM['pin-tg'], 0)
+  assert.equal(f.state.unreadDots['pin-tg'], false)
+  assert.equal(f.badge.textContent, '')
+  assert.equal(f.badge.classList.hidden, true)
+  assert.equal(f.state.svcTabTotals.tg.t, 5, 'повторное открытие не вычитает погашенное ещё раз')
+  assert.equal(f.state.svcTabTotals.tg.m, 1)
+  assert.equal(f.polls.length, 2, 'фоновый пересчёт запрошен на каждое явное открытие')
+  assert.ok(f.tabs.every(b => b[0] === 'tg' && b[1] === 5 && b[2] === 1))
+})
+
+test('TG-READ-BADGE: фоновый скан вернул 3 — цифра возвращается и показывается', async () => {
+  const f = tgUnreadFixture(3)
+  f.state.activePinId = 'synthetic'
+  f.state.unreadTotals.synthetic = { c: 0, m: 0 }
+  f.state.unreadTotalsAt.synthetic = Date.now()
+  f.state.unreadBaseC.synthetic = 0
+  f.state.unreadBaseM.synthetic = 0
+  f.state.unreadDots = { synthetic: false }
+  f.state.svcTabTotals = { tg: { t: 0, m: 0 } }
+  // Изолируем именно фоновый скан сервиса: read-lane проверяется отдельно.
+  f.ctx.refreshSelectedUnread = async () => {}
+  // Строка избранного: перерисовку бейджа делаем наблюдаемой.
+  vm.runInContext(extractFunction('setRowBadge'), f.ctx)
+  const rowBadge = { textContent: '', classList: { hidden: false,
+    toggle(name, on) { if (name === 'hidden') this.hidden = !!on } } }
+  const target = { querySelector: sel => sel === '.row-badge' ? rowBadge : null }
+  f.ctx.document = { querySelector: sel => sel === '.chat-row[data-pin="synthetic"]' ? target : null }
+  const result = await f.poll()
+  assert.equal(result.favs[0].count, 3)
+  assert.equal(f.state.unreadTotals.synthetic.c, 3, 'мессенджер не отметил прочтение — цифра вернулась')
+  assert.equal(f.state.unreadTotals.synthetic.m, 0)
+  assert.ok(f.badges.some(b => b[0] === 'combined' && b[1] === 3), 'общий счётчик снова показывает 3: ' + JSON.stringify(f.badges))
+  assert.equal(rowBadge.textContent, '3', 'строка избранного снова показывает 3')
+  assert.equal(rowBadge.classList.hidden, false)
+})
+
+// Открытие одного чата не должно перекрашивать чужие счётчики: два пина
+// Telegram делят вкладку сервиса, третий пин — Mattermost со своими API-счётчиками.
+function multiPinBadgeFixture() {
+  const tabs = [], presentations = [], polls = [], reads = [], saved = []
+  const services = [
+    { id: 'tg', name: 'Telegram', url: 'https://web.telegram.org/k/', partition: 'persist:tg' },
+    { id: 'mm', name: 'Mattermost', url: 'https://im.astralinux.ru/', partition: 'persist:mm' }
+  ]
+  const pins = [
+    { id: 'pin-a', serviceId: 'tg', title: 'Первый', url: 'https://web.telegram.org/k/#1' },
+    { id: 'pin-b', serviceId: 'tg', title: 'Второй', url: 'https://web.telegram.org/k/#2' },
+    { id: 'pin-mm', serviceId: 'mm', title: 'Канал MM', url: 'https://im.astralinux.ru/team/channels/x' }
+  ]
+  const state = {
+    cfg: { pinned: pins, services, selectedPinId: '', activity: {} },
+    activePinId: '',
+    lastUsed: {},
+    unreadTotals: { 'pin-a': { c: 4, m: 1 }, 'pin-b': { c: 2, m: 0 }, 'pin-mm': { c: 7, m: 3 } },
+    unreadTotalsAt: {},
+    unreadBaseC: {},
+    unreadBaseM: {},
+    unreadDots: { 'pin-a': true, 'pin-b': true, 'pin-mm': true },
+    svcTabTotals: { tg: { t: 6, m: 1 }, mm: { t: 12, m: 3 } },
+    pinViews: {}
+  }
+  const makeRow = pin => {
+    const badge = { textContent: '', classList: { hidden: false, mention: false,
+      toggle(name, on) { if (name === 'hidden') this.hidden = !!on; if (name === 'mention') this.mention = !!on } } }
+    const classes = {}
+    return { pinId: pin.id, badge, classes,
+      dataset: { pin: pin.id },
+      classList: { toggle: (name, on) => { classes[name] = !!on } },
+      querySelector: sel => sel === '.row-badge' ? badge : null }
+  }
+  const rows = pins.map(makeRow)
+  const document = {
+    querySelector: sel => {
+      const match = /^\.chat-row\[data-pin="([^"]+)"\]$/.exec(sel)
+      return match ? rows.find(row => row.pinId === match[1]) || null : null
+    },
+    querySelectorAll: sel => sel === '.chat-row' ? rows : []
+  }
+  const view = { dataset: {}, classList: { toggle() {} }, focus() {}, executeJavaScript() {} }
+  const ctx = sandbox(['selectChat', 'setRowBadge'], {
+    state, document, saveConfig: cfg => saved.push(cfg),
+    ensurePinView: () => view, enqueueLoad() {}, trimPinViews() {}, renderViewHead() {}, syncChatSelection() {},
+    queueSelectedUnread: id => { reads.push(id); return Promise.resolve() },
+    refreshUnreadPresentation: () => presentations.push(1),
+    updateBadge2: (...args) => tabs.push(args),
+    runUnreadJob: (key, svcId) => { polls.push([key, svcId]); return Promise.resolve() },
+    pollUnreadService: async () => {}
+  })
+  // Исходная отрисовка строк — как в живом списке избранного.
+  for (const row of rows) {
+    const totals = state.unreadTotals[row.pinId] || { c: 0, m: 0 }
+    ctx.setRowBadge(row, { count: totals.c, mentions: totals.m, unread: state.unreadDots[row.pinId] === true })
+  }
+  return { ctx, state, rows, tabs, presentations, polls, reads, saved }
+}
+
+test('TG-READ-BADGE: открытие чата не трогает счётчики других чатов', () => {
+  const f = multiPinBadgeFixture()
+  // Объекты и массивы, созданные внутри vm, несут прототипы своего контекста:
+  // для strict-сравнения приводим их к обычному JSON.
+  const plain = value => JSON.parse(JSON.stringify(value))
+  const rowOf = id => f.rows.find(row => row.pinId === id)
+  assert.equal(rowOf('pin-b').badge.textContent, '2', 'до открытия у соседнего TG-чата своя цифра')
+  assert.equal(rowOf('pin-mm').badge.textContent, '@3', 'у MM свой бейдж с упоминаниями')
+
+  f.ctx.selectChat('pin-a')
+
+  // Открытый чат погашен.
+  assert.equal(f.state.unreadTotals['pin-a'].c, 0)
+  assert.equal(f.state.unreadTotals['pin-a'].m, 0)
+  assert.equal(rowOf('pin-a').badge.textContent, '')
+  // Соседний чат того же сервиса не тронут ни в состоянии, ни в DOM.
+  assert.deepEqual(f.state.unreadTotals['pin-b'], { c: 2, m: 0 }, 'чужой чат TG остался непрочитанным')
+  assert.equal(f.state.unreadDots['pin-b'], true, 'точка чужого чата не гаснет')
+  assert.equal('pin-b' in f.state.unreadBaseC, false, 'база чужого чата не создаётся')
+  assert.equal('pin-b' in f.state.unreadBaseM, false)
+  assert.equal('pin-b' in f.state.unreadTotalsAt, false, 'отметка замера чужого чата не двигается')
+  assert.equal(rowOf('pin-b').badge.textContent, '2', 'бейдж чужого чата TG остался прежним')
+  assert.equal(rowOf('pin-b').classes.selected, false)
+  // Mattermost живёт на своих счётчиках: не тронут и не перерисован.
+  assert.deepEqual(f.state.unreadTotals['pin-mm'], { c: 7, m: 3 })
+  assert.equal(f.state.unreadDots['pin-mm'], true)
+  assert.deepEqual(plain(f.state.svcTabTotals.mm), { t: 12, m: 3 }, 'итог вкладки MM не изменился')
+  assert.equal(f.tabs.some(args => args[0] === 'mm'), false, 'вкладка MM не перерисовывалась')
+  // Вкладка TG уменьшена ровно на погашенное открытым чатом.
+  assert.deepEqual(plain(f.tabs), [['tg', 2, 0, false]])
+  assert.deepEqual(plain(f.state.svcTabTotals.tg), { t: 2, m: 0 })
+  // Побочные эффекты — только про открытый чат и его сервис.
+  assert.deepEqual(plain(f.reads), ['pin-a'])
+  assert.deepEqual(plain(f.polls), [['poll:tg', 'tg']])
+  assert.equal(f.presentations.length, 1)
+  assert.equal(f.saved.length, 1, 'конфиг сохранён один раз')
+  assert.equal(f.state.cfg.selectedPinId, 'pin-a')
+  assert.equal(rowOf('pin-a').classes.selected, true)
+  assert.equal(rowOf('pin-mm').classes.selected, false)
 })
